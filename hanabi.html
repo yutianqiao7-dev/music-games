@@ -110,6 +110,7 @@
       <strong>🎵 曲を選ぶ / ここにドロップ</strong>
       mp3・wav・ogg・m4a・flac など
       <div id="fileName"></div>
+      <div id="listen" style="margin-top:4px;color:var(--sub);font-size:12.5px"></div>
       <div class="bar" id="bar"><i></i></div>
     </div>
     <input type="file" id="file" accept="audio/*,.mp3,.wav,.ogg,.m4a,.flac,.aac" hidden>
@@ -182,6 +183,7 @@
   </div>
 </div>
 
+<script src="common.js"></script>
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
@@ -236,6 +238,82 @@ function fft(re, im) {
   }
 }
 
+// 和音を聴くための大きい FFT
+const CN = 4096, CH = 2048;
+const cTab = (() => {
+  const n = CN, rev = new Uint16Array(n), cos = new Float32Array(n / 2), sin = new Float32Array(n / 2), win = new Float32Array(n), bits = Math.log2(n);
+  for (let i = 0; i < n; i++) { let r = 0; for (let b = 0; b < bits; b++) r |= ((i >> b) & 1) << (bits - 1 - b); rev[i] = r; }
+  for (let i = 0; i < n / 2; i++) { cos[i] = Math.cos(TAU * i / n); sin[i] = Math.sin(TAU * i / n); }
+  for (let i = 0; i < n; i++) win[i] = 0.5 - 0.5 * Math.cos(TAU * i / (n - 1));
+  return { rev, cos, sin, win };
+})();
+function fftBig(re, im) {
+  const n = CN, { rev, cos, sin } = cTab;
+  for (let i = 0; i < n; i++) { const j = rev[i]; if (j > i) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+  for (let size = 2; size <= n; size <<= 1) {
+    const h = size >> 1, step = n / size;
+    for (let i = 0; i < n; i += size) for (let j = 0, k = 0; j < h; j++, k += step) {
+      const a = i + j, b = a + h, tr = re[b] * cos[k] + im[b] * sin[k], ti = im[b] * cos[k] - re[b] * sin[k];
+      re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
+    }
+  }
+}
+
+// 聴き取り: 拍・キー・盛り上がり・見せ場をまとめる (アップロード時に一度だけ)
+const KEY_NAMES = ['ド', 'ド♯', 'レ', 'ミ♭', 'ミ', 'ファ', 'ファ♯', 'ソ', 'ラ♭', 'ラ', 'シ♭', 'シ'];
+function listen(feat) {
+  const { flux, frames, dt } = feat;
+  // 盛り上がり (約2.4秒の平均を 0〜1 に)
+  const ps = new Float64Array(frames + 1);
+  for (let i = 0; i < frames; i++) ps[i + 1] = ps[i] + flux[i];
+  const W = Math.max(2, Math.round(1.2 / dt)), env = new Float32Array(frames);
+  for (let i = 0; i < frames; i++) { const lo = Math.max(0, i - W), hi = Math.min(frames, i + W + 1); env[i] = (ps[hi] - ps[lo]) / (hi - lo); }
+  const sorted = Array.from(env).sort((a, b) => a - b), p10 = sorted[Math.floor(frames * 0.1)], p95 = sorted[Math.floor(frames * 0.95)] || 1;
+  for (let i = 0; i < frames; i++) env[i] = clamp((env[i] - p10) / Math.max(1e-6, p95 - p10), 0, 1);
+  feat.env = env;
+  // 拍
+  RG.beats(feat);
+  const beats = feat.beatInfo.beats;
+  // キー: 12音の鳴り方を長調・短調の型と照らし合わせる
+  const tot = new Float64Array(12);
+  for (let f = 0; f < feat.cFrames; f++) {
+    let sm = 0; for (let k = 0; k < 12; k++) sm += feat.chroma[f * 12 + k];
+    if (sm > 1e-6) for (let k = 0; k < 12; k++) tot[k] += feat.chroma[f * 12 + k] / sm;
+  }
+  const MAJ = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88], MIN = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+  const corr = (prof, sh) => {
+    let ma = 0, mb = 0; for (let k = 0; k < 12; k++) { ma += tot[k]; mb += prof[k]; } ma /= 12; mb /= 12;
+    let n = 0, da = 0, db = 0;
+    for (let k = 0; k < 12; k++) { const a = tot[(k + sh) % 12] - ma, b = prof[k] - mb; n += a * b; da += a * a; db += b * b; }
+    return n / Math.sqrt(da * db + 1e-12);
+  };
+  let key = { tonic: 0, minor: false }, kb = -2;
+  for (let sh = 0; sh < 12; sh++) for (const minor of [false, true]) { const c = corr(minor ? MIN : MAJ, sh); if (c > kb) { kb = c; key = { tonic: sh, minor }; } }
+  feat.key = key;
+  feat.scale = new Uint8Array(12);                       // 効果音に使う音 (その調のペンタトニック)
+  (key.minor ? [0, 3, 5, 7, 10] : [0, 2, 4, 7, 9]).forEach(d => feat.scale[(key.tonic + d) % 12] = 1);
+  // 見せ場: 盛り上がりが一気に上がるところ (サビの入りなど)
+  const pe = new Float64Array(frames + 1);
+  for (let i = 0; i < frames; i++) pe[i + 1] = pe[i] + env[i];
+  const L = Math.round(4 / dt), cand = [];
+  for (let i = L; i + L < frames; i += Math.max(1, Math.round(0.25 / dt))) {
+    const d = (pe[i + L] - pe[i]) / L - (pe[i] - pe[i - L]) / L;
+    if (d > 0.2) cand.push({ t: i * dt, d });
+  }
+  cand.sort((a, b) => b.d - a.d);
+  const climax = [], maxC = Math.ceil(feat.duration / 40) + 1;
+  for (const c of cand) {
+    if (climax.length >= maxC) break;
+    if (climax.some(t => Math.abs(t - c.t) < 12)) continue;
+    climax.push(c.t);
+  }
+  feat.climax = climax.map(t => {                        // いちばん近い拍に合わせる
+    let b = t, bd = 1e9; for (const x of beats) { const d = Math.abs(x - t); if (d < bd) { bd = d; b = x; } }
+    return bd < 0.5 ? b : t;
+  }).sort((a, b) => a - b);
+  feat.info = `聴き取り結果: ♩${Math.round(feat.beatInfo.bpm)} ・ ${KEY_NAMES[key.tonic]}${key.minor ? '短調' : '長調'} ・ 見せ場 ${feat.climax.length} か所`;
+}
+
 async function extractFeatures(buffer, onProgress) {
   const sr = buffer.sampleRate, len = buffer.length;
   const mono = new Float32Array(len);
@@ -245,6 +323,18 @@ async function extractFeatures(buffer, onProgress) {
   }
   const frames = Math.floor((len - FFT_N) / HOP) + 1;
   if (frames < 10) throw new Error('曲が短すぎます');
+  // 左右どちらで鳴っているか
+  const pan = new Float32Array(frames);
+  if (buffer.numberOfChannels > 1) {
+    const L = buffer.getChannelData(0), R = buffer.getChannelData(1);
+    for (let f = 0; f < frames; f++) {
+      let a = 0, b = 0;
+      for (let i = f * HOP, e = i + FFT_N; i < e; i += 2) { a += L[i] * L[i]; b += R[i] * R[i]; }
+      a = Math.sqrt(a); b = Math.sqrt(b);
+      pan[f] = (b - a) / (a + b + 1e-9);
+    }
+  }
+  const bright = new Float32Array(frames);
   const half = FFT_N / 2;
   const binBand = new Uint8Array(half);
   for (let k = 0; k < half; k++) {
@@ -260,26 +350,48 @@ async function extractFeatures(buffer, onProgress) {
     const off = f * HOP;
     for (let i = 0; i < FFT_N; i++) { re[i] = mono[off + i] * win[i]; im[i] = 0; }
     fft(re, im);
-    let sum = 0, ls = 0;
+    let sum = 0, ls = 0, cw = 0, cs = 0;
     for (let k = 1; k < half; k++) {
-      const mag = Math.log1p(50 * Math.sqrt(re[k] * re[k] + im[k] * im[k]));
+      const lin = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
+      const mag = Math.log1p(50 * lin);
+      if (k > 3 && k < 140) { cw += lin; cs += lin * k; }       // 音の高さの目安 (重心)
       ls += mag;
       const d = mag - prev[k];
       if (d > 0) { sum += d; bands[binBand[k]][f] += d; }
       prev[k] = mag;
     }
-    flux[f] = sum; loud[f] = ls;
+    flux[f] = sum; loud[f] = ls; bright[f] = cw > 1e-9 ? Math.log2(cs / cw) : 0;
     if ((f & 255) === 0 && performance.now() - lastYield > 30) {
-      onProgress && onProgress(f / frames);
+      onProgress && onProgress(f / frames * 0.7, 0);
       await new Promise(r => setTimeout(r));
       lastYield = performance.now();
     }
   }
   flux[0] = 0; bands.forEach(b => b[0] = 0);
-  onProgress && onProgress(1);
+  // 和音・メロディ: 長い窓でもう一度聴き、12音それぞれの強さを記録する
+  const cFrames = Math.max(1, Math.floor((len - CN) / CH) + 1), chroma = new Float32Array(cFrames * 12);
+  if (len >= CN) {
+    const cre = new Float32Array(CN), cim = new Float32Array(CN), pcOf = new Int8Array(CN / 2).fill(-1);
+    for (let k = 1; k < CN / 2; k++) {
+      const hz = k * sr / CN;
+      if (hz >= 196 && hz <= 2100) pcOf[k] = ((Math.round(12 * Math.log2(hz / 261.6256)) % 12) + 12) % 12;
+    }
+    for (let f = 0; f < cFrames; f++) {
+      const off = f * CH;
+      for (let i = 0; i < CN; i++) { cre[i] = mono[off + i] * cTab.win[i]; cim[i] = 0; }
+      fftBig(cre, cim);
+      for (let k = 1; k < CN / 2; k++) if (pcOf[k] >= 0) chroma[f * 12 + pcOf[k]] += Math.sqrt(cre[k] * cre[k] + cim[k] * cim[k]);
+      if ((f & 63) === 0 && performance.now() - lastYield > 30) {
+        onProgress && onProgress(0.7 + 0.3 * f / cFrames, 1);
+        await new Promise(r => setTimeout(r));
+        lastYield = performance.now();
+      }
+    }
+  }
+  onProgress && onProgress(1, 1);
   let seed = frames;
   for (let i = 0; i < frames; i += 97) seed = (seed * 31 + Math.round(flux[i] * 10)) | 0;
-  return { flux, loud, bands, frames, dt: HOP / sr, sr, duration: buffer.duration, seed };
+  return { flux, loud, bright, pan, chroma, cFrames, bands, frames, dt: HOP / sr, sr, duration: buffer.duration, seed };
 }
 
 /* ============================================================
@@ -294,11 +406,22 @@ const DIFF = {
 const PALETTES = [[45, 5], [355, 45], [130, 185], [215, 275], [325, 45], [185, 215], [25, 355], [275, 325], [150, 50], [200, 330]];
 
 function makeChart(feat, diffName, aspect = 2.2) {
-  const { flux, bands, frames, dt } = feat, P = DIFF[diffName];
+  const { flux, bands, frames, dt, env } = feat, P = DIFF[diffName];
   const ps = new Float64Array(frames + 1);
   for (let i = 0; i < frames; i++) ps[i + 1] = ps[i] + flux[i];
   const gm = ps[frames] / frames;
   const W = Math.max(4, Math.round(0.5 / dt));
+  const fT = n => (n * HOP + FFT_N / 2) / feat.sr + 0.002;
+
+  // 拍の格子: 拍・裏拍・16分のどこに近いか
+  const beats = feat.beatInfo.beats, per = feat.beatInfo.period;
+  const grid = t => {
+    let lo = 0, hi = beats.length - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (beats[m] <= t) lo = m; else hi = m - 1; }
+    const b0 = beats[lo], p = lo + 1 < beats.length ? beats[lo + 1] - b0 : per;
+    const x = (t - b0) / p * 4, q = Math.round(x);
+    return { d: (x - q) * p / 4, sub: ((q % 4) + 4) % 4 };
+  };
 
   const cands = [];
   for (let n = 2; n < frames - 2; n++) {
@@ -306,23 +429,28 @@ function makeChart(feat, diffName, aspect = 2.2) {
     if (v < flux[n - 1] || v <= flux[n + 1] || v < flux[n - 2] || v < flux[n + 2]) continue;
     const lo = Math.max(0, n - W), hi = Math.min(frames, n + W + 1);
     const lm = (ps[hi] - ps[lo]) / (hi - lo);
-    if (v > lm * P.mult + gm * 0.15) cands.push({ n, s: v - lm });
+    if (v > lm * P.mult + gm * 0.15) {
+      const gr = grid(fT(n)), on = Math.abs(gr.d) < 0.035;       // リズムに乗っている音を優先
+      cands.push({ n, s: (v - lm) * (on ? [1.5, 1.05, 1.25, 1.05][gr.sub] : 1), gd: on ? gr.d : 0 });
+    }
   }
   cands.sort((a, b) => b.s - a.s);                 // 強い音から優先して採用
-  const g = Math.max(1, Math.round(P.gap / dt));
   const taken = new Uint8Array(frames), picked = [];
   for (const c of cands) {
     if (taken[c.n]) continue;
     picked.push(c);
+    const g = Math.max(1, Math.round(P.gap * (1.45 - 0.6 * env[c.n]) / dt));   // 静かなところはゆったり、サビは細かく
     taken.fill(1, Math.max(0, c.n - g + 1), Math.min(frames, c.n + g));
   }
+  picked.forEach((c, i) => c.rank = 1 - i / picked.length);                   // 1 に近いほど強い音
   const bigThr = picked.length ? picked[Math.floor(picked.length * 0.07)].s : Infinity;
   picked.sort((a, b) => a.n - b.n);
+  const tAt = k => fT(picked[k].n) - picked[k].gd * 0.6;                       // 拍にほぼ乗っている音は拍へ寄せる
 
   // 長押し: 音が伸びている (鳴り続けていて、新しい音の立ち上がりが少ない) 区間を選ぶ。
   // 始まりも終わりも実際の音に合わせ、途中の音は「長押し中に弾ける小花火」になる。
   const role = new Uint8Array(picked.length), holdOf = {};
-  if (feat.loud && picked.length > 6) {
+  if (picked.length > 6) {
     const pl = new Float64Array(frames + 1);
     for (let i = 0; i < frames; i++) pl[i + 1] = pl[i] + feat.loud[i];
     const mean = (arr, a, b) => b > a ? (arr[b] - arr[a]) / (b - a) : 0;
@@ -340,16 +468,16 @@ function makeChart(feat, diffName, aspect = 2.2) {
         const sc = sustain - 0.5 * mean(ps, a + 3, Math.max(a + 3, b - 2)) / gm + 0.08 * Math.min(d, 2);
         if (sc > bestS) { bestS = sc; bestJ = j; }
       }
-      let eb = bestJ > 0 ? picked[bestJ].n : 0;
+      let eb = bestJ > 0 ? picked[bestJ].n : 0, et = bestJ > 0 ? tAt(bestJ) : 0;
       // 次の音までずっと伸びている音: 音が小さくなるところ (または次の音の少し手前) まで押す
       const nx = picked[i + 1].n, lim = Math.min(nx - Math.round(0.35 / dt), a + Math.round(3 / dt));
       let e = a + 3;
       while (e < lim && feat.loud[e] >= head * 0.5) e++;
       if ((e - a) * dt >= 0.75) {
         const sc = Math.min(1.2, mean(pl, a + 2, e) / head) - 0.5 * mean(ps, a + 3, e) / gm + 0.08 * Math.min((e - a) * dt, 2);
-        if (sc > bestS) { bestS = sc; bestJ = i; eb = e; }
+        if (sc > bestS) { bestS = sc; bestJ = i; eb = e; et = fT(e); }
       }
-      if (bestJ > 0) spans.push({ i, j: bestJ, eb, sc: bestS });
+      if (bestJ > 0) spans.push({ i, j: bestJ, eb, et, sc: bestS });
     }
     spans.sort((x, y) => y.sc - x.sc);
     let quota = Math.floor(feat.duration / P.holdEvery);
@@ -363,13 +491,40 @@ function makeChart(feat, diffName, aspect = 2.2) {
       for (let k = sp.i + 1; k <= sp.j; k++) role[k] = 2;
     }
   }
-  const fT = n => (n * HOP + FFT_N / 2) / feat.sr + 0.002, tAt = k => fT(picked[k].n);
+  // 見せ場: いちばん近い強い音を尺玉にする
+  for (const ct of feat.climax) {
+    let bk = -1, bs = -1;
+    for (let k = 0; k < picked.length; k++) {
+      if (role[k]) continue;
+      const d = Math.abs(tAt(k) - ct);
+      if (d < 0.6 && picked[k].s * (1 - d) > bs) { bs = picked[k].s * (1 - d); bk = k; }
+    }
+    if (bk >= 0) picked[bk].clim = true;
+  }
+  // 音の高さ: 前後数秒の中で高い音か低い音か (0〜1)
+  const br = picked.map(c => { let sm = 0; for (let k = 0; k < 4; k++) sm += feat.bright[Math.min(frames - 1, c.n + k)]; return sm / 4; });
+  const hrOf = i => {
+    let lo = 0, cnt = 0;
+    for (let k = i - 1; k >= 0 && (picked[i].n - picked[k].n) * dt < 6; k--) { cnt++; if (br[k] < br[i]) lo++; }
+    for (let k = i + 1; k < picked.length && (picked[k].n - picked[i].n) * dt < 6; k++) { cnt++; if (br[k] < br[i]) lo++; }
+    return cnt >= 4 ? lo / cnt : 0.5;
+  };
+  // 左右: 曲全体のばらつきに対してどちらに寄っているか
+  let pv = 0; for (let i = 0; i < frames; i += 4) pv += feat.pan[i] * feat.pan[i];
+  const pstd = Math.sqrt(pv / Math.ceil(frames / 4)) || 1;
+  // そのとき鳴っている音 (調の音の中から) → 効果音の高さ
+  const pitchAt = (t, hr) => {
+    const ci = clamp(Math.floor(t * feat.sr / CH), 0, feat.cFrames - 1), cj = Math.min(feat.cFrames - 1, ci + 1);
+    let pc = feat.key.tonic, bv = -1;
+    for (let k = 0; k < 12; k++) { if (!feat.scale[k]) continue; const v = feat.chroma[ci * 12 + k] + feat.chroma[cj * 12 + k]; if (v > bv) { bv = v; pc = k; } }
+    return 67 + ((pc - 7 + 12) % 12) + (hr > 0.7 ? 12 : 0);
+  };
 
   const bandMean = bands.map(b => { let s = 0; for (let i = 0; i < frames; i++) s += b[i]; return s / frames || 1e-9; });
   const rng = mulberry32(feat.seed + diffName.length * 7919);
   const use = [1, 1, 1, 1];
   const notes = [];
-  let u = 0.5, v = 0.5, ang = rng() * TAU, prevT = -10, prevType = -1;
+  let u = 0.5, v = 0.5, dir = rng() < 0.5 ? -1 : 1, prevT = -10, prevType = -1;
   let pal = PALETTES[Math.floor(rng() * PALETTES.length)], palLeft = 0;
 
   for (let i = 0; i < picked.length; i++) {
@@ -377,7 +532,7 @@ function makeChart(feat, diffName, aspect = 2.2) {
     const c = picked[i];
     const t = tAt(i);
     let hold = 0, ticks = [];
-    if (role[i] === 1) { hold = fT(holdOf[i].eb); for (let k = i + 1; k < holdOf[i].j; k++) ticks.push(tAt(k)); }
+    if (role[i] === 1) { hold = holdOf[i].et; for (let k = i + 1; k < holdOf[i].j; k++) ticks.push(tAt(k)); }
     // 花火の種類: いちばん目立って鳴った帯域 (偏りすぎないよう補正)
     const useSum = use[0] + use[1] + use[2] + use[3];
     let type = 0, best = -1;
@@ -387,36 +542,39 @@ function makeChart(feat, diffName, aspect = 2.2) {
     }
     for (let b = 0; b < 4; b++) use[b] *= 0.85;
     use[type] += 1;
+    const hi = bands[3][c.n] / bandMean[3] / (bands[0][c.n] / bandMean[0] + bands[3][c.n] / bandMean[3] + 1e-9);
 
-    // 夜空での位置: 前の花火から流れるようにつながる道筋
+    // 夜空での位置: 高い音ほど高く、左右は音の定位に寄せつつ、前の花火から流れるようにつなぐ
+    const hr = hrOf(i), targetV = 0.86 - 0.72 * hr, panB = clamp(feat.pan[c.n] / (pstd * 2.5), -1, 1);
     const gap = t - prevT;
-    if (gap > 1.6 || i === 0) {
-      u = 0.12 + 0.76 * rng(); v = 0.15 + 0.7 * rng(); ang = rng() * TAU;
+    if (gap > 1.6 || notes.length === 0) {
+      u = clamp(0.5 + panB * 0.3 + (rng() - 0.5) * 0.5, 0.1, 0.9); v = targetV; dir = rng() < 0.5 ? -1 : 1;
     } else {
       const d = Math.min(P.max, P.base + gap * P.per);
-      ang += (rng() - 0.5) * 1.1 + (type !== prevType ? (rng() < 0.5 ? -1 : 1) * (0.5 + rng() * 0.9) : 0);
-      for (let k = 0; k < 6; k++) {
-        const nu = u + Math.cos(ang) * d, nv = v + Math.sin(ang) * d * aspect;
-        if (nu < 0.03 || nu > 0.97) { ang = Math.PI - ang; continue; }
-        if (nv < 0.03 || nv > 0.97) { ang = -ang; continue; }
-        u = nu; v = nv; break;
-      }
-      u = clamp(u, 0.03, 0.97); v = clamp(v, 0.03, 0.97);
+      const sv = clamp(targetV - v, -d * aspect * 0.85, d * aspect * 0.85);
+      const rem = Math.sqrt(Math.max(0, d * d - (sv / aspect) * (sv / aspect)));
+      if (type !== prevType && rng() < 0.35) dir = -dir;
+      if (panB * dir < -0.4 && rng() < 0.5) dir = -dir;
+      let du = dir * Math.max(rem, d * 0.4);
+      if (u + du < 0.04 || u + du > 0.96) { dir = -dir; du = -du; }
+      u = clamp(u + du, 0.04, 0.96); v = clamp(v + sv, 0.05, 0.95);
     }
     if (palLeft <= 0 || gap > 1.6) { pal = PALETTES[Math.floor(rng() * PALETTES.length)]; palLeft = 6 + Math.floor(rng() * 6); }
     palLeft--;
     const flip = rng() < 0.5;
     const nextGap = i + 1 < picked.length ? (picked[i + 1].n - c.n) * dt : 10;
-    const big = !hold && ((c.s >= bigThr && gap >= 0.5 && nextGap >= 0.5) || i === picked.length - 1);
+    const big = !hold && ((c.s >= bigThr && gap >= 0.5 && nextGap >= 0.5) || c.clim || i === picked.length - 1);
     const rainbow = !big && !hold && i > 4 && rng() < 0.065;      // たまに混ざる大当たりの「虹玉」
-    notes.push({ t, type, big, rainbow, hold, ticks, s: c.s, flick: false, fr: -Math.PI / 2 + (rng() - 0.5) * 1.4,
+    notes.push({ t, type, big, rainbow, hold, ticks, flick: false, fr: -Math.PI / 2 + (rng() - 0.5) * 1.4,
+      fs: c.rank + (nextGap > 0.7 ? 0.5 : 0) + 0.4 * hi,          // フリック向きの度合い: 強い音・フレーズの締め・シンバル系
+      sz: 0.82 + 0.24 * c.rank + 0.2 * env[c.n], midi: pitchAt(t, hr), hot: env[c.n],
       u, v, hue: pal[flip ? 1 : 0], hue2: pal[flip ? 0 : 1], lu: (rng() - 0.5) * 0.14, ph: rng() * TAU });
     prevT = hold || t; prevType = type;
   }
-  // フリック: アクセントの強い音。払う向きは次の花火の方向 (placeNotes で決める)
+  // フリック: アクセントの強い音やフレーズの締め。払う向きは次の花火の方向 (placeNotes で決める)
   const fq = Math.floor(notes.length * P.flick);
   const order = notes.map((n, i) => i).filter(i => i > 2 && !notes[i].big && !notes[i].rainbow && !notes[i].hold)
-    .sort((a, b) => notes[b].s - notes[a].s);
+    .sort((a, b) => notes[b].fs - notes[a].fs);
   let fc = 0;
   for (const i of order) {
     if (fc >= fq) break;
@@ -424,6 +582,12 @@ function makeChart(feat, diffName, aspect = 2.2) {
     notes[i].flick = true; fc++;
   }
   return notes;
+}
+// 調の音階を k 段のぼる
+function scaleStep(midi, k) {
+  const sc = song.feat.scale; let m = midi;
+  while (k > 0) { m++; if (sc[((m % 12) + 12) % 12]) k--; }
+  return m > 93 ? m - 12 : m;
 }
 
 /* ============================================================
@@ -643,13 +807,56 @@ function shellPos(p, lx, tx, ty, ph) {
   return { x: lx + (tx - lx) * e + Math.sin(p * 10 + ph) * 3.5 * G.S * (1 - p), y: G.horizon - (G.horizon - ty) * e };
 }
 function drawRise(n, p, w) {
-  const pos = shellPos(p, n.lx, n.x, n.y, n.ph);
-  if (n.sx !== undefined && p < 1) {
+  const pos = shellPos(p, n.lx, n.x, n.y, n.ph), S = G.S;
+  if (n.sx === undefined) {
+    if (p < 0.2) {               // 発射: 筒口の火花と「ポン」
+      glow(n.lx, G.horizon - 4, (n.big ? 70 : 44) * S, 38, 0.4);
+      for (let i = 0; i < (n.big ? 12 : 7); i++) {
+        addPart(n.lx, G.horizon - 2, (Math.random() - 0.5) * 80 * S, -(110 + Math.random() * 190) * S,
+          { life: 0.3 + Math.random() * 0.3, drag: 0.95, g: 520 * S, w: 1.2, c: WARM, flick: 2, a: 0.85 });
+      }
+      launchPop(n.big);
+    }
+  } else if (p < 1) {
     fxc.globalAlpha = 0.85; fxc.strokeStyle = WARM; fxc.lineWidth = w;
     fxc.beginPath(); fxc.moveTo(n.sx, n.sy); fxc.lineTo(pos.x, pos.y); fxc.stroke();
-    if (Math.random() < 0.45) spark(pos.x, pos.y, 26);
+    fxc.globalAlpha = 1; fxc.fillStyle = '#fff6dc';                      // 光る玉の先端
+    fxc.beginPath(); fxc.arc(pos.x, pos.y, w * 0.75, 0, TAU); fxc.fill();
+    if (Math.random() < (n.big ? 0.9 : 0.5)) spark(pos.x, pos.y, n.big ? 46 : 26);
+    if (n.big && Math.random() < 0.5) spark(pos.x, pos.y, 70);
   }
   n.sx = pos.x; n.sy = pos.y;
+}
+// 曲の拍に合わせて水面の台船から噴き上がる火花
+const SITES = [0.14, 0.32, 0.5, 0.68, 0.86];
+function fountain(x, power, hue) {
+  if (parts.length > 2800) return;
+  const S = G.S, k = Math.round(9 + 8 * power);
+  for (let i = 0; i < k; i++) {
+    addPart(x + (Math.random() - 0.5) * 6, G.horizon - 3, (Math.random() - 0.5) * 90 * S, -(280 + Math.random() * 300 * power + 110 * power) * S,
+      { life: 0.5 + Math.random() * 0.4, drag: 0.985, g: 560 * S, w: 1.5, c: i % 2 ? GOLD : hsl(hue, 100, 70), flick: 2, a: 0.9 });
+  }
+}
+function starMine() {            // 見せ場: 空いっぱいの速射連発
+  for (let i = 0; i < 8; i++) {
+    later.push({ at: performance.now() + i * 75, fn: () => {
+      const pal = PALETTES[Math.floor(Math.random() * PALETTES.length)], k = i % 2 ? 7 - (i >> 1) : i >> 1;
+      burst(G.skyL + G.skyW * (k + 0.5) / 8, G.skyT + G.skyH * (0.1 + Math.random() * 0.4), i % 4, pal[0], pal[1], 0.75, false);
+      boom(i % 4, 0.3, false);
+    } });
+  }
+  cheer(0.6); pulse = Math.max(pulse, 1.4);
+}
+function updateStage(now) {
+  const g = game, f = song.feat, B = f.beatInfo.beats, C = f.climax;
+  while (g.bi < B.length && B[g.bi] <= now) {
+    const k = g.bi++, e = f.env[clamp(Math.round(B[k] / f.dt), 0, f.frames - 1)];
+    if (now - B[k] > 0.2 || e < 0.45) continue;
+    const hue = (k * 37) % 360, st = [0, 1, 2, 3, 4, 3, 2, 1][k % 8];
+    if (k % 4 === 0 && e > 0.7) SITES.forEach(u => fountain(G.W * u, e, hue));
+    else { fountain(G.W * SITES[st], e, hue); if (e > 0.75) fountain(G.W * SITES[4 - st], e, hue + 40); }
+  }
+  while (g.ci < C.length && C[g.ci] <= now) { if (now - C[g.ci] < 0.3) starMine(); g.ci++; }
 }
 
 // タイトルやリザルトの背景で上がる花火
@@ -702,7 +909,7 @@ for (const k of ['speed', 'offset', 'sfx']) {
 $('auto').addEventListener('change', e => { settings.auto = e.target.checked; saveSettings(); updateStartBtn(); });
 syncSettingsUI();
 
-let actx = null, analyser = null, specData = null, noiseBuf = null;
+let actx = null, analyser = null, specData = null, noiseBuf = null, sfxBus = null, revIn = null;
 let song = null;       // { name, buffer, feat }
 let loadToken = 0;
 
@@ -716,24 +923,104 @@ function ensureCtx() {
     noiseBuf = actx.createBuffer(1, actx.sampleRate, actx.sampleRate);
     const d = noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    // 効果音の出口: 音割れを防ぐコンプレッサーと、湾に響くような残響
+    sfxBus = actx.createDynamicsCompressor();
+    sfxBus.threshold.value = -14; sfxBus.ratio.value = 5; sfxBus.attack.value = 0.003; sfxBus.release.value = 0.2;
+    sfxBus.connect(actx.destination);
+    const len = Math.round(actx.sampleRate * 2.4), ir = actx.createBuffer(2, len, actx.sampleRate);
+    for (let c = 0; c < 2; c++) {
+      const b = ir.getChannelData(c); let y = 0;
+      for (let i = 0; i < len; i++) { const k = i / len; y += ((Math.random() * 2 - 1) * Math.pow(1 - k, 2.6) - y) * (0.6 - 0.45 * k); b[i] = y; }
+    }
+    const conv = actx.createConvolver(), rg = actx.createGain();
+    conv.buffer = ir; rg.gain.value = 0.6; revIn = actx.createGain();
+    revIn.connect(conv); conv.connect(rg); rg.connect(sfxBus);
   }
   return actx;
 }
 
-// 花火の破裂音 (ノイズをローパスに通した「ドン」)
-function boom(type, q, big) {
-  const vol = settings.sfx / 100;
-  if (!actx || actx.state !== 'running' || vol <= 0) return;
-  const t = actx.currentTime, src = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain();
-  src.buffer = noiseBuf;
-  f.type = 'lowpass';
-  const f0 = big ? 420 : [700, 1100, 1700, 3600][type];
-  f.frequency.setValueAtTime(f0, t); f.frequency.exponentialRampToValueAtTime(f0 * 0.25, t + 0.3);
-  const dur = big ? 1.0 : type === 3 ? 0.22 : 0.42;
-  g.gain.setValueAtTime(vol * q * (big ? 0.75 : 0.42), t);
-  g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
-  src.connect(f); f.connect(g); g.connect(actx.destination);
+/* ---- 効果音の部品 ---- */
+function out(node, wet = 0.35) {
+  node.connect(sfxBus);
+  if (wet > 0) { const s = actx.createGain(); s.gain.value = wet; node.connect(s); s.connect(revIn); }
+}
+function nz(t, dur, type, f0, f1, peak, wet, attack = 0.002) {        // ノイズ
+  const src = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain();
+  src.buffer = noiseBuf; f.type = type;
+  f.frequency.setValueAtTime(f0, t); f.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(peak, t + attack);
+  g.gain.exponentialRampToValueAtTime(0.0006, t + dur);
+  src.connect(f); f.connect(g); out(g, wet);
   src.start(t, Math.random() * 0.5, dur + 0.05);
+}
+function tn(t, dur, type, f0, f1, peak, wet) {                         // 音程のある音
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = type; o.frequency.setValueAtTime(f0, t);
+  if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, t + dur * 0.6);
+  g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(peak, t + 0.004);
+  g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
+  o.connect(g); out(g, wet); o.start(t); o.stop(t + dur + 0.03);
+}
+function crackle(t, dur, peak) {                                       // パチパチと散る音
+  const src = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain();
+  src.buffer = noiseBuf; f.type = 'highpass'; f.frequency.value = 3600;
+  g.gain.setValueAtTime(0, t);
+  const times = [];
+  for (let i = 0, n = Math.round(dur * 26); i < n; i++) times.push(t + Math.random() * dur);
+  times.sort((a, b) => a - b);
+  for (let i = 0; i < times.length; i++) {
+    const a = times[i], e = Math.min(a + 0.006 + Math.random() * 0.008, (times[i + 1] || 1e9) - 0.001);
+    if (e <= a) continue;
+    g.gain.setValueAtTime(peak * (0.35 + Math.random() * 0.65) * (1 - (a - t) / dur * 0.6), a); g.gain.setValueAtTime(0, e);
+  }
+  src.connect(f); f.connect(g); out(g, 0.3);
+  src.start(t, Math.random() * 0.4, dur + 0.1);
+}
+// 花火の破裂音: 腹に響く低音 + 胴鳴り + 弾ける音 + 散る音
+function boom(type, q, big) {
+  if (!sfxOn()) return;
+  const t = actx.currentTime, v = settings.sfx / 100 * Math.min(1.2, q);
+  if (big) {
+    tn(t, 1.1, 'sine', 95, 30, v * 0.9, 0.5);
+    nz(t, 1.3, 'lowpass', 520, 110, v * 0.6, 0.6);
+    nz(t, 0.07, 'highpass', 1800, 1800, v * 0.3, 0.3);
+    crackle(t + 0.25, 1.0, v * 0.16);
+    return;
+  }
+  tn(t, 0.32, 'sine', [130, 150, 170, 210][type], [42, 50, 58, 80][type], v * [0.55, 0.5, 0.42, 0.22][type], 0.4);
+  nz(t, [0.42, 0.38, 0.4, 0.2][type], 'lowpass', [700, 1100, 1700, 3600][type], [175, 275, 425, 900][type], v * [0.34, 0.34, 0.3, 0.24][type], 0.5);
+  if (type === 1 || type === 2) nz(t, 0.05, 'highpass', 2500, 2500, v * 0.16, 0.3);
+  if (type === 3) crackle(t + 0.05, 0.45, v * 0.2);
+  if (type === 2) crackle(t + 0.3, 0.6, v * 0.1);
+}
+function whoosh() {              // フリック: 風を切る音
+  if (!sfxOn()) return;
+  nz(actx.currentTime, 0.28, 'bandpass', 500, 3800, settings.sfx / 100 * 0.24, 0.3, 0.11);
+}
+function thud() {                // 不発
+  if (!sfxOn()) return;
+  const t = actx.currentTime, v = settings.sfx / 100;
+  tn(t, 0.14, 'sine', 120, 55, v * 0.16, 0.1); nz(t, 0.1, 'lowpass', 400, 200, v * 0.08, 0.1);
+}
+function launchPop(big) {        // 発射の「ポン」
+  if (!sfxOn()) return;
+  tn(actx.currentTime, big ? 0.14 : 0.09, 'sine', big ? 150 : 210, 70, settings.sfx / 100 * (big ? 0.13 : 0.05), 0.3);
+}
+function sizzleStart() {         // 長押し中: 火花が回り続ける音
+  if (!sfxOn()) return null;
+  const t = actx.currentTime, v = settings.sfx / 100;
+  const src = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain(), lfo = actx.createOscillator(), lg = actx.createGain();
+  src.buffer = noiseBuf; src.loop = true; f.type = 'highpass'; f.frequency.value = 4200;
+  g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(v * 0.07, t + 0.08);
+  lfo.frequency.value = 13; lg.gain.value = v * 0.035; lfo.connect(lg); lg.connect(g.gain);
+  src.connect(f); f.connect(g); out(g, 0.3);
+  src.start(t); lfo.start(t);
+  return { src, g, lfo };
+}
+function sizzleStop(s) {
+  if (!s) return;
+  const t = actx.currentTime;
+  try { s.g.gain.cancelScheduledValues(t); s.g.gain.setTargetAtTime(0, t, 0.04); s.src.stop(t + 0.3); s.lfo.stop(t + 0.3); } catch (e) {}
 }
 
 function setProgress(p) {
@@ -743,24 +1030,30 @@ function setProgress(p) {
 function updateStartBtn() {
   const b = $('start');
   if (!song) { b.disabled = true; if (!b.dataset.busy) b.textContent = '曲を選んでください'; return; }
-  const n = makeChart(song.feat, settings.diff).length;
+  const ch = makeChart(song.feat, settings.diff), n = ch.length, h = ch.filter(x => x.hold).length, f = ch.filter(x => x.flick).length;
   b.disabled = n === 0;
-  b.textContent = n ? `${settings.auto ? '鑑賞する' : '開演'} ― 花火 ${n} 発` : '音の立ち上がりを検出できませんでした';
+  b.textContent = n ? `${settings.auto ? '鑑賞する' : '開演'} ― タップ ${n - h - f}・長押し ${h}・フリック ${f}` : '音の立ち上がりを検出できませんでした';
 }
 
 async function loadBuffer(buffer, name) {
   const token = ++loadToken;
   song = null;
   $('err').textContent = '';
-  $('fileName').textContent = name + ' を解析中…';
+  $('fileName').textContent = name + ' のリズムを聴いています…'; $('listen').textContent = '';
   $('start').dataset.busy = '1'; $('start').disabled = true; $('start').textContent = '花火を仕込んでいます…';
   setProgress(0);
   try {
-    const feat = await extractFeatures(buffer, p => { if (token === loadToken) setProgress(p); });
+    const feat = await extractFeatures(buffer, (p, phase) => {
+      if (token !== loadToken) return;
+      setProgress(p);
+      if (phase === 1) $('fileName').textContent = name + ' のメロディと響きを聴いています…';
+    });
     if (token !== loadToken) return;
+    listen(feat);
     song = { name: name.replace(/\.[a-z0-9]{2,5}$/i, ''), buffer, feat };
     const m = Math.floor(buffer.duration / 60), s = Math.floor(buffer.duration % 60);
     $('fileName').textContent = `♪ ${song.name} (${m}:${String(s).padStart(2, '0')})`;
+    $('listen').textContent = feat.info;
   } catch (e) {
     if (token !== loadToken) return;
     $('fileName').textContent = '';
@@ -829,19 +1122,15 @@ let pulse = 0;             // 命中で夜空が一瞬ふくらむ
 /* ---- ごほうびの音 ---- */
 const PENTA = [1, 9 / 8, 5 / 4, 3 / 2, 5 / 3, 2, 9 / 4, 5 / 2];
 function sfxOn() { return actx && actx.state === 'running' && settings.sfx > 0; }
-function chime(kind, combo) {        // 連発するほど音階を駆け上がる
+function chime(kind, midi) {         // 命中の鈴: その瞬間に曲で鳴っている音 (曲のキーの音階) で鳴る
   if (!sfxOn()) return;
-  const vol = settings.sfx / 100, t = actx.currentTime;
-  const f = kind === 'good' ? 392 : 659.25 * PENTA[(combo - 1) % 8] * (kind === 'great' ? 0.5 : 1);
-  const tone = (freq, type, v, dur) => {
-    const o = actx.createOscillator(), g = actx.createGain();
-    o.type = type; o.frequency.setValueAtTime(freq, t);
-    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(v, t + 0.004);
-    g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
-    o.connect(g); g.connect(actx.destination); o.start(t); o.stop(t + dur + 0.02);
-  };
-  tone(f, 'triangle', vol * (kind === 'perfect' ? 0.2 : 0.11), 0.3);
-  if (kind === 'perfect') tone(f * 2, 'sine', vol * 0.08, 0.2);
+  const t = actx.currentTime;
+  const f = 440 * Math.pow(2, ((midi || 76) - 69 - (kind === 'good' ? 12 : 0)) / 12);
+  const v = settings.sfx / 100 * (kind === 'perfect' ? 0.2 : kind === 'great' ? 0.13 : 0.08);
+  tn(t, 0.55, 'sine', f, f, v, 0.7);
+  tn(t, 0.3, 'triangle', f * 2, f * 2, v * 0.3, 0.5);
+  tn(t, 0.12, 'sine', f * 2.76, f * 2.76, v * 0.22, 0.4);
+  if (kind === 'perfect') tn(t + 0.06, 0.32, 'sine', f * 2, f * 2, v * 0.35, 0.7);     // きらめき
 }
 function riseSound(level) {          // 倍率アップ
   if (!sfxOn()) return;
@@ -851,7 +1140,7 @@ function riseSound(level) {          // 倍率アップ
     o.type = 'triangle'; o.frequency.setValueAtTime(523.25 * [1, 5 / 4, 3 / 2][i] * (1 + (level - 2) * 0.25), t + d);
     g.gain.setValueAtTime(0, t + d); g.gain.linearRampToValueAtTime(vol * 0.2, t + d + 0.005);
     g.gain.exponentialRampToValueAtTime(0.0005, t + d + 0.35);
-    o.connect(g); g.connect(actx.destination); o.start(t + d); o.stop(t + d + 0.4);
+    o.connect(g); out(g, 0.4); o.start(t + d); o.stop(t + d + 0.4);
   });
 }
 function cheer(amount) {             // 観客の歓声
@@ -863,7 +1152,7 @@ function cheer(amount) {             // 観客の歓声
   f.frequency.setValueAtTime(700, t); f.frequency.linearRampToValueAtTime(1500, t + 0.5); f.frequency.linearRampToValueAtTime(900, t + 2.2);
   g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol * 0.42 * amount, t + 0.35);
   g.gain.exponentialRampToValueAtTime(0.0005, t + 2.4);
-  src.connect(f); f.connect(g); g.connect(actx.destination);
+  src.connect(f); f.connect(g); out(g, 0.4);
   src.start(t); src.stop(t + 2.5);
 }
 function showBanner(text, color, size = 1) { banner = { text, color, size, t0: performance.now() }; }
@@ -913,7 +1202,9 @@ function placeNotes(g) {
   const hit = DIFF[g.diff].hit;
   for (const n of g.notes) {
     n.x = G.skyL + n.u * G.skyW; n.y = G.skyT + n.v * G.skyH;
-    n.lx = clamp(n.x + n.lu * G.W, 10, G.W - 10);
+    let su = SITES[0];                                  // いちばん近い台船から上がる
+    for (const q of SITES) if (Math.abs(q * G.W - n.x) < Math.abs(su * G.W - n.x)) su = q;
+    n.lx = clamp(su * G.W + n.lu * G.W * 0.2, 10, G.W - 10);
     n.r = G.hitR * hit * (n.big ? 1.3 : 1);
     n.sx = undefined;
   }
@@ -938,7 +1229,11 @@ function startGame() {
   src.start(startAt);
   game = {
     src, startAt, notes, head: 0, diff: settings.diff,
-    rise: 1.72 - settings.speed * 0.115,
+    rise: (() => {                                      // 発射の瞬間も拍に乗るよう、昇る時間を拍の整数倍にする
+      const base = 1.72 - settings.speed * 0.115, per = song.feat.beatInfo.period;
+      return clamp(Math.max(1, Math.round(base / per)) * per, 0.5, 2.4);
+    })(),
+    bi: 0, ci: 0,
     offset: settings.offset / 1000, auto: settings.auto,
     score: 0, shown: 0, combo: 0, maxCombo: 0, accSum: 0, judged: 0,
     mult: 1, gauge: 0, feverOn: false, feverEnd: 0, fevers: 0, shouts: 0,
@@ -956,6 +1251,7 @@ function startGame() {
 function stopGame() {
   if (!game) return;
   try { game.src.stop(); } catch (e) {}
+  if (game.hold) sizzleStop(game.hold.snd);
   game.src.disconnect();
   game = null;
 }
@@ -993,23 +1289,28 @@ function judge(n, kind, flicked) {
     g.combo = 0; g.mult = 1;
     if (n.hold) { g.counts.miss++; g.judged++; }          // 長押しは頭と最後の二発ぶん
     if (!g.feverOn) g.gauge = Math.max(0, g.gauge - 0.07);
-    fizzle(n.sx ?? n.x, n.sy ?? n.y);
+    fizzle(n.sx ?? n.x, n.sy ?? n.y); thud();
   } else {
     const m = comboUp(pnow);
     const fever = g.feverOn, fl = n.flick && flicked;
     gain = Math.round(1000 * J.w * (n.big ? 2 : 1) * (n.rainbow ? 3 : 1) * (fl ? 1.5 : 1) * m * (fever ? 2 : 1));
     g.score += gain; g.scorePunch = pnow;
-    burst(n.x, n.y, n.type, n.hue, n.hue2, n.hold ? J.q * 0.6 : J.q, n.big);
+    burst(n.x, n.y, n.type, n.hue, n.hue2, (n.hold ? J.q * 0.6 : J.q) * n.sz, n.big);
+    // サビでは左右対称にもう一輪 (こだまのように少し遅れて小さく咲く)
+    if (n.hot > 0.6 && !n.hold && Math.abs(n.x - G.W / 2) > 90 * G.S && parts.length < 2600) {
+      later.push({ at: pnow + 130, fn: () => burst(G.W - n.x, n.y, n.type, n.hue2, n.hue, J.q * 0.5, false) });
+    }
     if (fl) { comet(n.x, n.y, n.fa, n.hue, n.hue2); if (kind === 'perfect') label = '流星!'; }
     if (n.rainbow) {                        // 虹玉: 大当たり
       burst(n.x, n.y, 1, (n.hue + 120) % 360, (n.hue + 240) % 360, 0.85, false);
       burst(n.x, n.y, 0, (n.hue + 200) % 360, n.hue2, 0.6, false);
       showBanner('虹 玉!', '#ffffff', 0.9); shake = Math.max(shake, 6); cheer(0.5);
     }
-    if (n.hold) g.hold = { n, ti: 0, lost: null, last: null, acc: 0, spin: Math.random() * TAU };
-    else try { stamp(n, J.q); } catch (e) { console.warn(e); }     // 写真の失敗でゲームを止めない
+    if (n.hold) g.hold = { n, ti: 0, lost: null, last: null, acc: 0, spin: Math.random() * TAU, snd: sizzleStart() };
+    else try { stamp(n, J.q * n.sz); } catch (e) { console.warn(e); }     // 写真の失敗でゲームを止めない
     boom(n.type, J.q, n.big);
-    chime(kind, g.combo);
+    chime(kind, n.midi);
+    if (fl) whoosh();
     const extra = (kind === 'perfect' ? (m >= 4 ? 2 : m >= 2 ? 1 : 0) : 0) + (fever ? 2 : 0) + (n.rainbow ? 4 : 0);
     for (let i = 0; i < extra; i++) chainBurst(n, i);
     rings.push({ x: n.x, y: n.y, r: n.r, color: J.color, t0: pnow, perfect: kind === 'perfect' });
@@ -1031,7 +1332,7 @@ function updateHold(now) {
   if (on) h.lost = null; else if (h.lost === null) h.lost = now;
   const fever = g.feverOn;
   if (!on && now - h.lost > 0.16 && now < n.hold - 0.12) {      // 離してしまった
-    g.hold = null; g.combo = 0; g.mult = 1;
+    g.hold = null; g.combo = 0; g.mult = 1; sizzleStop(h.snd); thud();
     g.counts.miss++; g.judged++;
     if (!fever) g.gauge = Math.max(0, g.gauge - 0.07);
     fizzle(n.x, n.y);
@@ -1056,21 +1357,21 @@ function updateHold(now) {
     const hue = h.ti % 2 ? n.hue : n.hue2;
     glow(bx, by, 70 * S, hue, 0.16);
     shell(bx, by, 46 * S, parts.length > 3000 ? 10 : 22, 1, { life: 0.65, drag: 0.94, g: 30 * S, w: 1.6, c: hsl(hue, 100, 78), flick: 2 });
-    boom(3, 0.3, false); chime('perfect', g.combo);
+    boom(3, 0.3, false); chime('perfect', scaleStep(n.midi, h.ti));
     rings.push({ x: n.x, y: n.y, r: n.r * 0.8, color: '#ffe08a', t0: pnow, perfect: false });
     pulse = Math.max(pulse, 0.5);
     texts.push({ x: bx, y: by - 14 * S, text: '', color: '#ffe08a', t0: pnow, sub: '+' + gain.toLocaleString(), hot: false });
     if (!fever) { g.gauge += 0.014; if (g.gauge >= 1) startFever(now); }
   }
   if (now >= n.hold) {                                          // 押し切った: 満開
-    g.hold = null;
+    g.hold = null; sizzleStop(h.snd);
     const mm = comboUp(pnow), gain = 1500 * mm * (g.feverOn ? 2 : 1);
     g.score += gain; g.scorePunch = pnow;
     g.counts.perfect++; g.judged++; g.accSum += 1;
     burst(n.x, n.y, 0, n.hue, n.hue2, 1.15, false);
     shell(n.x, n.y, 185 * S, parts.length > 3000 ? 16 : 40, 1, { life: 2.6, drag: 0.968, g: 115 * S, w: 1.5, c: hsl(42, 100, 60), emit: 18, a: 0.85 });
     try { stamp(Object.assign({}, n, { type: 0 }), 1.15); } catch (e) { console.warn(e); }
-    boom(0, 1, true); chime('perfect', g.combo);
+    boom(0, 1, true); chime('perfect', scaleStep(n.midi, n.ticks.length + 2));
     shake = Math.max(shake, 6); pulse = Math.max(pulse, 1.2);
     rings.push({ x: n.x, y: n.y, r: n.r * 1.3, color: '#ffe08a', t0: pnow, perfect: true });
     for (let i = 0; i < 2 + (g.feverOn ? 2 : 0); i++) chainBurst(n, i);
@@ -1110,6 +1411,7 @@ function tryHit(x, y, touch) {
 
 function updateGame(now) {
   const g = game;
+  updateStage(now);
   if (g.feverOn) {
     g.gauge = (g.feverEnd - now) / FEVER_LEN;
     if (g.gauge <= 0) { g.gauge = 0; g.feverOn = false; }
@@ -1611,7 +1913,7 @@ resize();
 setInterval(() => { if (!document.hidden && performance.now() - frameAt > 200) frame(performance.now()); }, 33);
 
 // 動作テスト用
-window.oto = { extractFeatures, makeChart, loadBuffer, ensureCtx, tryHit, flickMove, pointer, keys, songTime, settings,
+window.oto = { extractFeatures, listen, makeChart, loadBuffer, ensureCtx, tryHit, flickMove, pointer, keys, songTime, settings,
   get game() { return game; }, get song() { return song; }, get parts() { return parts.length; } };
 </script>
 </body>
