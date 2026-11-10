@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>リズムランナー - 音で跳べ</title>
+<link rel="stylesheet" href="common.css">
+</head>
+<body>
+<script src="common.js"></script>
+<script>
+'use strict';
+const { TAU, clamp, rand } = RG;
+const DIFF = {
+  easy:   { mult: 1.7,  gap: 0.55, slide: 0 },
+  normal: { mult: 1.45, gap: 0.36, slide: 0.75 },
+  hard:   { mult: 1.3,  gap: 0.25, slide: 1 },
+};
+const WIN = { perfect: 0.065, great: 0.115, good: 0.17 };
+const KIND = {
+  perfect: { label: 'PERFECT', color: '#ffe08a', w: 1 },
+  great:   { label: 'GREAT',   color: '#9ff0c8', w: 0.7 },
+  good:    { label: 'GOOD',    color: '#9cc4ff', w: 0.35 },
+};
+const fx = new RG.Fx();
+let notes = [], head = 0, popHead = 0, J = null, act = null, counts = {}, hurt = -9999, trail = [], scroll = 0;
+const hash = i => { const x = Math.sin(i * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+
+function geo(api) {
+  const { W, H, S } = api;
+  return { px: W * 0.24, gy: H * 0.74, sz: 46 * S, speed: Math.max(430 * S, W * 0.52), JH: 128 * S };
+}
+
+function succeed(api, n, d, smash) {
+  const g = geo(api), kind = smash || d <= WIN.perfect ? 'perfect' : d <= WIN.great ? 'great' : 'good', K = KIND[kind];
+  n.done = true; n.ok = true; counts[kind]++;
+  const gain = J.hit(K.w, { mul: n.big ? 2.5 : 1 });
+  fx.text(g.px, g.gy - 175 * api.S, smash ? '突破!' : K.label, K.color, kind === 'perfect' ? 22 : 17);
+  fx.text(g.px, g.gy - 200 * api.S, '+' + gain.toLocaleString(), '#fff', gain >= 4000 ? 19 : 13);
+  fx.burst(g.px, g.gy, kind === 'perfect' ? 14 : 7, { colors: [K.color, '#fff'], ang: -Math.PI / 2, spread: 2.6, v0: 80, v1: 360, g: 700 * api.S });
+  RG.sfx.chime(J.combo, kind === 'perfect');
+  if (n.big) { fx.flash = 0.3; fx.flashColor = '255,255,255'; fx.shake = 9; RG.sfx.cheer(0.4); }
+}
+
+// 入力: verb = 'jump' | 'slide'
+function doAct(api, verb) {
+  const t = api.time();
+  let n = null;
+  for (let i = head; i < notes.length; i++) { if (!notes[i].done) { n = notes[i]; break; } }
+  const hitNow = n && Math.abs(n.t - t) <= WIN.good && n.verb === verb;
+  act = { verb, t0: t, dur: hitNow ? n.dur : 0.32 };
+  RG.sfx.tone(verb === 'jump' ? 330 : 180, 0.09, 0.06, 'sine', verb === 'jump' ? 660 : 110);
+  if (hitNow) succeed(api, n, Math.abs(n.t - t), false);
+}
+
+function drawObstacle(c, api, g, n, x, t) {
+  const S = api.S, pn = performance.now(), col = n.ok ? '#ffe08a' : n.big ? '#ffb347' : n.verb === 'jump' ? (n.type === 0 ? '#ff5d8f' : '#5ce1ff') : (n.type === 2 ? '#b08cff' : '#7dffb0');
+  c.save(); c.translate(x, 0);
+  c.globalAlpha = n.ok ? 0.55 : 1;
+  c.fillStyle = col; c.strokeStyle = col; c.shadowColor = col; c.shadowBlur = 16; c.lineWidth = 2.5;
+  if (n.verb === 'jump') {
+    if (n.type === 0 || n.big) {                        // トゲ
+      const k = n.big ? 1.25 : 1, w = 22 * S * k, h = 46 * S * k;
+      c.beginPath();
+      for (let s = -1; s <= 1; s++) { c.moveTo(s * w - w / 2, g.gy); c.lineTo(s * w, g.gy - h * (s ? 0.8 : 1)); c.lineTo(s * w + w / 2, g.gy); }
+      c.fill();
+    } else {                                            // 箱
+      const w = 44 * S; c.fillStyle = 'rgba(92,225,255,.18)';
+      c.beginPath(); c.rect(-w / 2, g.gy - w, w, w); c.fill(); c.stroke();
+      c.beginPath(); c.moveTo(-w / 2, g.gy - w); c.lineTo(w / 2, g.gy); c.moveTo(w / 2, g.gy - w); c.lineTo(-w / 2, g.gy); c.stroke();
+    }
+    c.shadowBlur = 0;
+    if (!n.ok) {                                        // 頂点に浮かぶ星
+      const sy = g.gy - g.JH - g.sz * 0.6;
+      c.fillStyle = '#ffe08a'; c.font = `${Math.round(24 * S)}px ${RG.FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillText('★', 0, sy + Math.sin(pn / 200 + n.t) * 3);
+    }
+  } else {
+    const bottom = g.gy - 30 * S;                        // この下をくぐる
+    if (n.type === 2) {                                  // 吊り下がった梁
+      const w = 50 * S; c.fillStyle = 'rgba(176,140,255,.2)';
+      c.beginPath(); c.rect(-w / 2, bottom - 230 * S, w, 230 * S); c.fill(); c.stroke();
+      c.fillStyle = col; c.beginPath();
+      for (let s = -1; s <= 1; s++) { c.moveTo(s * w * 0.33 - w * 0.16, bottom); c.lineTo(s * w * 0.33, bottom + 14 * S); c.lineTo(s * w * 0.33 + w * 0.16, bottom); }
+      c.fill();
+    } else {                                             // 回転ノコギリ
+      const r = 36 * S, cy = bottom - r + 8 * S;
+      c.beginPath(); c.moveTo(0, cy - r); c.lineTo(0, cy - 260 * S); c.stroke();
+      c.translate(0, cy); c.rotate(pn / 90);
+      c.beginPath();
+      for (let i = 0; i < 16; i++) { const a = i / 16 * TAU, rr = i % 2 ? r : r * 0.72; i ? c.lineTo(Math.cos(a) * rr, Math.sin(a) * rr) : c.moveTo(Math.cos(a) * rr, Math.sin(a) * rr); }
+      c.closePath(); c.fillStyle = 'rgba(125,255,176,.22)'; c.fill(); c.stroke();
+    }
+    c.shadowBlur = 0;
+  }
+  c.restore();
+  if (!n.ok) {                                           // 操作の目印
+    c.fillStyle = '#fff'; c.globalAlpha = 0.85; c.font = `800 ${Math.round(15 * S)}px ${RG.FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(n.verb === 'jump' ? '▲' : '▼', x, n.verb === 'jump' ? g.gy - g.JH - g.sz * 1.35 : g.gy + 26 * S);
+    c.globalAlpha = 1;
+  }
+}
+
+RG.shell({
+  id: 'runner', title: 'リズムランナー', sub: 'RHYTHM RUNNER', colors: ['#7dffb0', '#5ce1ff', '#b08cff'],
+  lead: '<b>曲から道が生まれる、ボタンひとつの疾走ゲーム。</b>地面を流れてくる光の印が足元に来た瞬間が音の瞬間。そこで跳べば障害物をきれいに越えられます。',
+  how: [['一、見る', '障害物の手前を流れる<b style="display:inline;color:#fff">◆</b>が、押すタイミングの印'],
+        ['二、跳ぶ', '▲は <kbd>Space</kbd> / <kbd>↑</kbd> / クリックでジャンプ'],
+        ['三、くぐる', '▼は <kbd>↓</kbd> / <kbd>S</kbd> / 右クリックでスライディング']],
+  hint: 'スマホは画面の上側タップでジャンプ、下側タップでスライディング。コンボで最大4倍、ゲージ満タンで<b style="color:var(--a1)">ゾーン</b>に入り、無敵で突き進みます。',
+  count: (f, d) => RG.onsets(f, DIFF[d]).length, countLabel: n => `障害物 ${n} 個`,
+
+  start(api) {
+    const D = DIFF[api.diff], rng = RG.rng(api.song.feat.seed + 5);
+    notes = RG.onsets(api.song.feat, D);
+    for (const n of notes) {
+      n.verb = n.type >= 2 && !n.big && rng() < D.slide ? 'slide' : 'jump';
+      n.dur = clamp(n.next * 0.85, 0.2, 0.38); n.off = n.dur / 2; n.ok = false; n.popped = false;
+    }
+    head = 0; popHead = 0; act = null; hurt = -9999; trail = []; counts = { perfect: 0, great: 0, good: 0, miss: 0 }; fx.clear();
+    J = new RG.Juice(api, { combo: 'COMBO', fever: 'ゾーン', feverDesc: '得点2倍・無敵ダッシュ', lead: api.auto ? 'お手本プレイ' : '◆が足元に来た瞬間に ▲ジャンプ / ▼スライディング',
+      sub: () => `精度 ${J.pct().toFixed(1)}%${api.auto ? ' ・ お手本' : ''}`,
+      onFever() { fx.flash = 0.5; fx.flashColor = '255,255,255'; fx.shake = 10; } });
+  },
+  quit() { notes = []; J = null; act = null; fx.clear(); },
+  end(api) {
+    api.finish({ score: J.score, pct: J.pct(), names: ['韋駄天', '疾走者', 'ランナー', 'ジョガー', '練習中'], title: counts.miss === 0 ? 'ノーミス' : '',
+      stats: [['PERFECT', counts.perfect, '#ffe08a'], ['GREAT', counts.great, '#9ff0c8'], ['GOOD', counts.good, '#9cc4ff'], ['激突', counts.miss, '#ff8f8f'],
+        ['最大コンボ', J.maxCombo], ['ゾーン', J.fevers + ' 回'], ['障害物', notes.length], ['精度', J.pct().toFixed(1) + '%']] });
+  },
+  pointer(api, type, e) {
+    if (api.state !== 'play' || api.auto || type !== 'down') return;
+    doAct(api, e.button === 2 || api.pointer.y > api.H * 0.62 ? 'slide' : 'jump');
+  },
+  key(api, code, down) {
+    if (!down || api.auto) return;
+    if (['Space', 'ArrowUp', 'KeyW', 'KeyJ'].includes(code)) doAct(api, 'jump');
+    else if (['ArrowDown', 'KeyS', 'KeyK'].includes(code)) doAct(api, 'slide');
+  },
+
+  frame(api, dt) {
+    const { c, W, H, S } = api, pn = performance.now(), playing = !!J && api.state !== 'title', g = geo(api);
+    const t = playing ? api.time() : pn / 1000, fever = playing && J.feverOn;
+    if (api.state !== 'pause') scroll += dt * g.speed * (fever ? 1.5 : 1);
+
+    /* ---- 進行 ---- */
+    if (api.state === 'play') {
+      J.update();
+      for (let i = head; i < notes.length; i++) {
+        const n = notes[i];
+        if (n.t - t > WIN.good) break;
+        if (n.done) continue;
+        if (fever && t >= n.t) { succeed(api, n, 0, true); continue; }                 // ゾーン中は体当たりで突破
+        if (api.auto && t >= n.t) { act = { verb: n.verb, t0: n.t, dur: n.dur }; succeed(api, n, 0, false); continue; }
+        if (t > n.t + WIN.good) {                                                      // 押せなかった → 激突
+          n.done = true; counts.miss++; J.miss(); hurt = pn; fx.shake = 12; fx.flash = 0.3; fx.flashColor = '255,60,80';
+          fx.text(g.px, g.gy - 175 * S, '激突!', '#ff8f8f', 20); RG.sfx.noise(240, 0.35, 0.55);
+        }
+      }
+      while (head < notes.length && notes[head].done) head++;
+      for (let i = popHead; i < notes.length && notes[i].t - t < 1; i++) {            // 障害物が自機を通り過ぎる瞬間にはじける
+        const n = notes[i];
+        if (n.done && !n.popped && t >= n.t + n.off) {
+          n.popped = true;
+          const y = n.verb === 'jump' ? g.gy - 24 * S : g.gy - 70 * S;
+          fx.burst(g.px + 10, y, n.ok ? 18 : 22, { colors: n.ok ? ['#ffe08a', '#fff', '#7dffb0'] : ['#ff5d6c', '#ff9a9a'], v0: 100, v1: 480, g: 600 * S, s: 2.5 });
+        }
+      }
+      while (popHead < notes.length && notes[popHead].popped) popHead++;
+    }
+    fx.step(dt);
+
+    /* ---- 背景 ---- */
+    const sky = c.createLinearGradient(0, 0, 0, g.gy);
+    if (fever) { const h = (pn * 0.06) % 360; sky.addColorStop(0, `hsl(${h} 80% 8%)`); sky.addColorStop(1, `hsl(${(h + 50) % 360} 85% 30%)`); }
+    else { sky.addColorStop(0, '#03061a'); sky.addColorStop(0.65, '#0d1b46'); sky.addColorStop(1, `hsl(265 60% ${20 + RG.audio.bass * 14}%)`); }
+    c.fillStyle = sky; c.fillRect(0, 0, W, g.gy);
+    for (let i = 0; i < 70; i++) { c.fillStyle = `rgba(255,255,255,${0.15 + hash(i) * 0.5})`; c.fillRect((hash(i + 99) * W * 1.3 - scroll * 0.02) % W + (hash(i + 99) * W * 1.3 - scroll * 0.02 < 0 ? W : 0), hash(i + 7) * g.gy * 0.8, 1.5, 1.5); }
+    // 曲の音に合わせて伸び縮みする街
+    const spec = RG.audio.spec;
+    for (const [par, bw, base, amp, col] of [[0.12, 54 * S, 70, 150, 'rgba(60,70,160,.55)'], [0.3, 76 * S, 40, 70, 'rgba(22,24,70,.95)']]) {
+      const off = scroll * par, i0 = Math.floor(off / bw);
+      for (let i = i0; i < i0 + W / bw + 2; i++) {
+        const sp = spec ? spec[2 + ((i % 40) + 40) % 40] / 255 : 0, h = (base * (0.4 + hash(i * 3 + par * 100)) + amp * sp * (par < 0.2 ? 1 : 0.35)) * S, x = i * bw - off;
+        c.fillStyle = col; c.fillRect(x + 2, g.gy - h, bw - 4, h);
+        if (par < 0.2) { c.fillStyle = `hsla(${190 + (i % 40) * 4},100%,70%,${0.25 + sp * 0.6})`; c.fillRect(x + 2, g.gy - h, bw - 4, 3); }
+      }
+    }
+
+    c.save();
+    c.translate((Math.random() - 0.5) * fx.shake, (Math.random() - 0.5) * fx.shake);
+    // 地面
+    const gr = c.createLinearGradient(0, g.gy, 0, H);
+    gr.addColorStop(0, '#141a4a'); gr.addColorStop(1, '#04050f');
+    c.fillStyle = gr; c.fillRect(-20, g.gy, W + 40, H - g.gy + 20);
+    c.strokeStyle = 'rgba(125,255,176,.14)'; c.lineWidth = 1;
+    const gs = 90 * S;
+    for (let x = -(scroll % gs); x < W + gs; x += gs) { c.beginPath(); c.moveTo(x, g.gy); c.lineTo(x - (H - g.gy) * 0.8, H); c.stroke(); }
+    c.strokeStyle = fever ? `hsl(${(pn * 0.5) % 360} 100% 70%)` : '#7dffb0'; c.shadowColor = c.strokeStyle; c.shadowBlur = 14 + RG.audio.bass * 20; c.lineWidth = 3;
+    c.beginPath(); c.moveTo(-20, g.gy); c.lineTo(W + 20, g.gy); c.stroke(); c.shadowBlur = 0;
+    if (fever || RG.audio.level > 0.45) {               // スピード線
+      c.strokeStyle = 'rgba(255,255,255,.14)'; c.lineWidth = 1.5;
+      for (let i = 0; i < (fever ? 16 : 6); i++) { const y = rand(0, g.gy), x = rand(0, W), l = rand(60, 220); c.beginPath(); c.moveTo(x, y); c.lineTo(x - l, y); c.stroke(); }
+    }
+
+    /* ---- 障害物と「押す印」 ---- */
+    if (playing) {
+      for (let i = popHead; i < notes.length; i++) {
+        const n = notes[i], mx = g.px + (n.t - t) * g.speed, x = mx + n.off * g.speed;
+        if (mx > W + 140) break;
+        if (n.popped) continue;
+        drawObstacle(c, api, g, n, x, t);
+        if (!n.done) {                                   // ◆: これが足元に来た瞬間に押す
+          const near = clamp(1 - Math.abs(n.t - t) / 0.5, 0, 1), s = (9 + near * 6) * S;
+          c.fillStyle = '#fff'; c.shadowColor = '#fff'; c.shadowBlur = 10 + near * 14;
+          c.beginPath(); c.moveTo(mx, g.gy - s); c.lineTo(mx + s * 0.7, g.gy); c.lineTo(mx, g.gy + s); c.lineTo(mx - s * 0.7, g.gy); c.closePath(); c.fill(); c.shadowBlur = 0;
+        }
+      }
+      c.strokeStyle = 'rgba(255,255,255,.28)'; c.lineWidth = 2; c.setLineDash([4, 6]);
+      c.beginPath(); c.moveTo(g.px, g.gy + 6); c.lineTo(g.px, g.gy + 34 * S); c.stroke(); c.setLineDash([]);
+    }
+
+    /* ---- 自機 ---- */
+    let yo = 0, rot = 0, sx = 1, sy = 1;
+    const a = playing ? act : { verb: 'jump', t0: Math.floor(t / 0.9) * 0.9, dur: 0.4 };
+    if (a) {
+      const p = (t - a.t0) / a.dur;
+      if (p >= 0 && p < 1) {
+        if (a.verb === 'jump') { yo = g.JH * 4 * p * (1 - p); rot = p * Math.PI; }
+        else { const k = Math.sin(p * Math.PI); sy = 1 - 0.58 * Math.min(1, k * 2.2); sx = 1 + 0.4 * Math.min(1, k * 2.2); }
+      } else if (playing && p >= 1) act = null;
+    }
+    const cy = g.gy - g.sz / 2 * sy - yo, hurtK = clamp(1 - (pn - hurt) / 400, 0, 1);
+    if (api.state !== 'pause') { trail.push({ y: cy, rot, sy, t: pn }); if (trail.length > 9) trail.shift(); }
+    const body = fever ? `hsl(${(pn * 0.7) % 360} 100% 65%)` : hurtK > 0 ? '#ff5d6c' : '#7dffb0';
+    trail.forEach((q, i) => {                              // 残像
+      const k = (i + 1) / trail.length, x = g.px - (trail.length - i) * 13 * S;
+      c.save(); c.globalAlpha = k * 0.22; c.translate(x, q.y); c.rotate(q.rot); c.fillStyle = body;
+      c.fillRect(-g.sz / 2, -g.sz / 2 * q.sy, g.sz, g.sz * q.sy); c.restore();
+    });
+    if (api.state !== 'pause' && yo === 0) fx.add(g.px - g.sz / 2, g.gy - 3, -rand(120, 300) * S, -rand(10, 120) * S, { life: rand(0.15, 0.35), c: body, s: 2, g: 500 * S });
+    fx.draw(c);
+    c.save(); c.translate(g.px + (Math.random() - 0.5) * hurtK * 8, cy); c.rotate(rot); c.scale(sx, sy);
+    c.shadowColor = body; c.shadowBlur = fever ? 34 : 18; c.fillStyle = body;
+    c.beginPath(); c.roundRect ? c.roundRect(-g.sz / 2, -g.sz / 2, g.sz, g.sz, g.sz * 0.16) : c.rect(-g.sz / 2, -g.sz / 2, g.sz, g.sz); c.fill(); c.shadowBlur = 0;
+    c.fillStyle = '#06101f';                                // 顔
+    c.fillRect(g.sz * 0.02, -g.sz * 0.2, g.sz * 0.12, g.sz * 0.2); c.fillRect(g.sz * 0.24, -g.sz * 0.2, g.sz * 0.12, g.sz * 0.2);
+    c.fillRect(g.sz * 0.02, g.sz * 0.14, g.sz * 0.34, g.sz * 0.07);
+    c.restore();
+    fx.drawTexts(c);
+    c.restore();
+    fx.drawFlash(c, W, H);
+    if (playing) J.draw(c);
+  },
+});
+</script>
+</body>
+</html>

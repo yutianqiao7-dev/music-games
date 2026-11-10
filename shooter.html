@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>ビートシューター - 曲があなたの武器になる</title>
+<link rel="stylesheet" href="common.css">
+</head>
+<body>
+<script src="common.js"></script>
+<script>
+'use strict';
+const { TAU, clamp, rand, lerp } = RG;
+const DIFF = {
+  easy:   { mult: 1.6,  gap: 0.30, slow: 2.6, fast: 1.25, fire: 2.8, ebs: 170, hp: 0.8 },
+  normal: { mult: 1.4,  gap: 0.22, slow: 2.1, fast: 0.95, fire: 2.0, ebs: 215, hp: 1 },
+  hard:   { mult: 1.25, gap: 0.15, slow: 1.7, fast: 0.68, fire: 1.4, ebs: 265, hp: 1.25 },
+};
+const HUES = [20, 50, 190, 290];           // 音の高さごとの武器の色: 砲 / 拡散 / 連装 / 追尾
+const WEAPON = ['キャノン', 'スプレッド', 'ツイン', 'ホーミング'];
+const ENEMY = {
+  drift: { hp: 2,  r: 17, val: 300,  gems: 1, col: '#ff6ad5' },
+  dash:  { hp: 2,  r: 16, val: 400,  gems: 1, col: '#ffb347' },
+  shoot: { hp: 5,  r: 20, val: 800,  gems: 2, col: '#b08cff' },
+  tank:  { hp: 14, r: 30, val: 1500, gems: 5, col: '#ff5d6c' },
+  boss:  { hp: 90, r: 62, val: 10000, gems: 30, col: '#ffe08a' },
+};
+const fx = new RG.Fx();
+let J = null, notes = [], fireIdx = 0, spawns = [], spIdx = 0, bullets = [], enemies = [], ebul = [], gems = [], waves = [];
+let player = { x: 0, y: 0, inv: 0 }, level = 1, xp = 0, counts = {}, gemStreak = 0, lastGem = 0, basicAt = 0, feverAt = 0, starY = 0, lastWeapon = -1;
+
+function plan(feat, diff) {            // 敵の出現予定: 曲が盛り上がるほど間隔が詰まる
+  const D = DIFF[diff], rng = RG.rng(feat.seed + 17), out = [], dur = feat.duration;
+  for (let t = 1.4; t < dur - 2.5;) {
+    const e = RG.intensity(feat, t), r = rng();
+    out.push({ t, kind: r < 0.38 ? 'line' : r < 0.58 ? 'vee' : r < 0.76 ? 'dash' : r < 0.9 ? 'shoot' : 'tank', seed: rng() });
+    t += lerp(D.slow, D.fast, e) * (0.8 + rng() * 0.4);
+  }
+  const peak = (a, b) => { let bt = a * dur, bv = -1; for (let t = a * dur; t < b * dur; t += 0.5) { const v = RG.intensity(feat, t); if (v > bv) { bv = v; bt = t; } } return bt; };
+  if (dur > 50) out.push({ t: peak(0.32, 0.5), kind: 'boss', seed: 0.5 }, { t: peak(0.7, 0.86), kind: 'boss', seed: 0.5 });
+  else if (dur > 18) out.push({ t: peak(0.45, 0.65), kind: 'boss', seed: 0.5 });
+  return out.sort((a, b) => a.t - b.t);
+}
+
+function addEnemy(api, kind, x, y, o = {}) {
+  const E = ENEMY[kind], S = api.S, prog = clamp(api.time() / api.duration, 0, 1);
+  const hp = Math.ceil(E.hp * DIFF[api.diff].hp * (1 + prog * 0.9 + (level - 1) * 0.14) * (kind === 'boss' ? 1 + level * 0.25 : 1));
+  enemies.push(Object.assign({ kind, x, y, vx: 0, vy: 95 * S, hp, max: hp, r: E.r * S, t: 0, flash: 0, fire: rand(0.6, 1.4), ph: rand(0, TAU), x0: x }, o));
+  counts.spawned++;
+}
+function spawn(api, s) {
+  const { W, H, S } = api, cx = W * (0.2 + 0.6 * s.seed);
+  if (s.kind === 'line') for (let i = 0; i < 5; i++) addEnemy(api, 'drift', W * (0.14 + 0.18 * i), -30 - (s.seed > 0.5 ? i : 4 - i) * 26 * S);
+  else if (s.kind === 'vee') for (let i = -2; i <= 2; i++) addEnemy(api, 'drift', clamp(cx + i * 58 * S, 30, W - 30), -30 - (2 - Math.abs(i)) * 40 * S);
+  else if (s.kind === 'dash') for (let i = 0; i < 3; i++) addEnemy(api, 'dash', W * (0.2 + 0.3 * i) + (s.seed - 0.5) * 80, -30, { vy: 150 * S, wait: 0.7 + i * 0.25 });
+  else if (s.kind === 'shoot') for (const sx of [0.28, 0.72]) addEnemy(api, 'shoot', W * sx + (s.seed - 0.5) * 100, -30, { stopY: H * (0.16 + s.seed * 0.12) });
+  else if (s.kind === 'tank') { addEnemy(api, 'tank', cx, -40, { vy: 55 * S }); addEnemy(api, 'drift', cx - 80 * S, -90); addEnemy(api, 'drift', cx + 80 * S, -90); }
+  else { addEnemy(api, 'boss', W / 2, -80, { stopY: H * 0.2, vy: 120 * S }); J.say('WARNING', '#ff8f8f', 1.1); RG.sfx.tone(220, 0.5, 0.2, 'sawtooth', 110); }
+}
+
+/* ---- 曲の音がそのまま弾になる ---- */
+function shot(x, y, vx, vy, o) { bullets.push(Object.assign({ x, y, vx, vy, r: 4, dmg: 1, hue: 190, life: 3 }, o)); }
+function volley(api, n) {
+  const S = api.S, L = level, x = player.x, y = player.y - 22 * S, hue = HUES[n.type];
+  if (n.type === 0) for (let i = 0; i < (L >= 4 ? 2 : 1); i++) shot(x + (L >= 4 ? (i ? 16 : -16) * S : 0), y, 0, -640 * S, { r: 9 * S, dmg: 4 + L, hue, splash: 85 * S });
+  else if (n.type === 1) { const k = Math.min(9, 3 + L); for (let i = 0; i < k; i++) { const a = -Math.PI / 2 + (i - (k - 1) / 2) * 0.15; shot(x, y, Math.cos(a) * 820 * S, Math.sin(a) * 820 * S, { hue }); } }
+  else if (n.type === 2) { const k = Math.min(4, 1 + Math.floor(L / 2)); for (let i = 0; i < k; i++) for (const s of [-1, 1]) shot(x + s * (9 + i * 9) * S, y + i * 6 * S, 0, -1150 * S, { r: 3.5, dmg: 1.5, hue }); }
+  else { const k = Math.min(8, 2 + L); for (let i = 0; i < k; i++) { const a = -Math.PI / 2 + (i - (k - 1) / 2) * 0.5; shot(x, y, Math.cos(a) * 420 * S, Math.sin(a) * 420 * S, { hue, homing: true, life: 2.4 }); } }
+  fx.burst(x, y, 4, { c: `hsl(${hue} 100% 70%)`, ang: -Math.PI / 2, spread: 1.2, v0: 100, v1: 300, l1: 0.3 });
+  if (n.big) {                                        // 強い音 → 衝撃波
+    waves.push({ x: player.x, y: player.y, t0: performance.now(), R: 320 * S });
+    for (const e of enemies.slice()) if (Math.hypot(e.x - player.x, e.y - player.y) < 320 * S + e.r) hurt(api, e, 5 + L);
+    for (const b of ebul) if (Math.hypot(b.x - player.x, b.y - player.y) < 320 * S) { b.dead = true; fx.burst(b.x, b.y, 4, { c: '#ff9ab0', v1: 160 }); J.add(50); }
+    fx.shake = Math.max(fx.shake, 9); RG.sfx.noise(260, 0.45, 0.4);
+  }
+  if (n.type !== lastWeapon) lastWeapon = n.type;
+}
+function hurt(api, e, d) {
+  if (e.hp <= 0) return;
+  e.hp -= d; e.flash = performance.now();
+  if (e.hp <= 0) kill(api, e);
+}
+function kill(api, e) {
+  const E = ENEMY[e.kind], S = api.S, i = enemies.indexOf(e);
+  if (i >= 0) enemies.splice(i, 1);
+  counts.kill++;
+  const gain = J.hit(1, { base: E.val, gauge: e.kind === 'boss' ? 0.4 : 0.022 });
+  fx.burst(e.x, e.y, e.kind === 'boss' ? 90 : e.kind === 'tank' ? 34 : 14, { colors: [E.col, '#fff'], v0: 80, v1: e.kind === 'boss' ? 900 : 420, s: e.kind === 'boss' ? 4 : 2.5, l1: e.kind === 'boss' ? 1.3 : 0.7 });
+  if (fx.t.length < 24) fx.text(e.x, e.y - e.r, '+' + gain.toLocaleString(), gain >= 4000 ? '#ffe08a' : '#fff', gain >= 4000 ? 20 : 13);
+  RG.sfx.noise(e.kind === 'boss' ? 300 : 900 + Math.random() * 700, e.kind === 'boss' ? 0.9 : 0.13, e.kind === 'boss' ? 0.7 : 0.2);
+  for (let k = 0; k < E.gems; k++) gems.push({ x: e.x, y: e.y, vx: rand(-1, 1) * 220 * S, vy: rand(-1, 0.4) * 220 * S, age: 0 });
+  if (e.kind === 'tank') fx.shake = Math.max(fx.shake, 7);
+  if (e.kind === 'boss') { counts.boss++; fx.shake = 20; fx.flash = 0.6; fx.flashColor = '255,255,255'; J.say('BOSS 撃破!', '#ffe08a', 1.2); RG.sfx.cheer(1); }
+}
+function playerHit(api) {
+  counts.hit++; J.miss(false); player.inv = 1.7;
+  fx.shake = 17; fx.flash = 0.4; fx.flashColor = '255,60,80';
+  fx.burst(player.x, player.y, 30, { colors: ['#ff5d6c', '#fff'], v1: 520 });
+  fx.text(player.x, player.y - 46, '被弾!', '#ff8f8f', 22); RG.sfx.noise(220, 0.4, 0.6);
+  for (const b of ebul) { b.dead = true; fx.burst(b.x, b.y, 3, { c: '#ff9ab0', v1: 140 }); }      // 立て直しのため弾を消す
+}
+
+function poly(c, n, r, rot = 0) { c.beginPath(); for (let i = 0; i < n; i++) { const a = rot + i / n * TAU; i ? c.lineTo(Math.cos(a) * r, Math.sin(a) * r) : c.moveTo(Math.cos(a) * r, Math.sin(a) * r); } c.closePath(); }
+
+RG.shell({
+  id: 'shooter', title: 'ビートシューター', sub: 'BEAT SHOOTER', colors: ['#5ce1ff', '#7dffb0', '#ffe08a'], hideCursor: true,
+  lead: '<b>曲の音が、そのままあなたの弾になる。</b>静かなところは単発、サビは弾幕。敵を倒してジェムを集め、武器を育てて押し切ろう。',
+  how: [['一、動く', 'マウス(スマホは指)に機体がついてくる。射撃は曲に合わせて自動'],
+        ['二、集める', '倒した敵が落とすジェムを拾うとレベルアップ。弾が増える'],
+        ['三、よける', '赤い弾と敵に触れると連鎖が切れる。ゲームオーバーはなし']],
+  hint: '低い音はキャノン、高い音はホーミングなど、音の高さで武器が変わります。強い音では衝撃波。ゲージ満タンで<b style="color:var(--a1)">オーバードライブ</b>：無敵で連射。',
+  count: (f, d) => plan(f, d).length, countLabel: n => `敵の群れ ${n} 波`,
+
+  start(api) {
+    const D = DIFF[api.diff];
+    notes = RG.onsets(api.song.feat, D); spawns = plan(api.song.feat, api.diff);
+    fireIdx = 0; spIdx = 0; bullets = []; enemies = []; ebul = []; gems = []; waves = []; level = 1; xp = 0; gemStreak = 0; basicAt = 0; feverAt = 0;
+    counts = { kill: 0, hit: 0, spawned: 0, boss: 0, gems: 0 }; fx.clear();
+    player = { x: api.W / 2, y: api.H * 0.82, inv: 0 };
+    J = new RG.Juice(api, { combo: 'KILL CHAIN', fever: 'オーバードライブ', feverDesc: '得点2倍・無敵・連射', lead: api.auto ? 'お手本プレイ' : '動いてよけろ。射撃は曲がやってくれる',
+      sub: () => `Lv.${level}  撃破 ${counts.kill}${api.auto ? ' ・ お手本' : ''}`,
+      onFever() { fx.flash = 0.5; fx.flashColor = '255,255,255'; fx.shake = 10; } });
+  },
+  quit() { J = null; enemies = []; bullets = []; ebul = []; gems = []; fx.clear(); },
+  end(api) {
+    const rate = counts.spawned ? counts.kill / counts.spawned * 100 : 0;
+    api.finish({ score: J.score, pct: rate - counts.hit * 3, names: ['撃墜王', 'エース', 'パイロット', 'ルーキー', '訓練生'], title: counts.hit === 0 ? 'ノーダメージ' : '',
+      stats: [['撃破', counts.kill, '#ffe08a'], ['撃破率', rate.toFixed(0) + '%', '#9ff0c8'], ['被弾', counts.hit, '#ff8f8f'], ['ボス撃破', counts.boss, '#ffb347'],
+        ['最大連鎖', J.maxCombo], ['レベル', level], ['ジェム', counts.gems], ['オーバードライブ', J.fevers + ' 回']] });
+  },
+
+  frame(api, dt) {
+    const { c, W, H, S } = api, pn = performance.now(), playing = !!J && api.state !== 'title', run = api.state === 'play';
+    const t = playing ? api.time() : 0, fever = playing && J.feverOn, D = DIFF[api.diff] || DIFF.normal;
+    const env = playing ? RG.intensity(api.song.feat, Math.max(0, t)) : 0.2;
+
+    /* ---- 背景: 流れる星 ---- */
+    c.fillStyle = fever ? `hsl(${(pn * 0.05) % 360} 70% 7%)` : '#03040f'; c.fillRect(0, 0, W, H);
+    const neb = c.createRadialGradient(W * 0.5, H * 0.3, 0, W * 0.5, H * 0.3, Math.max(W, H) * 0.7);
+    neb.addColorStop(0, `hsla(${fever ? (pn * 0.05 + 60) % 360 : 235},80%,${22 + RG.audio.bass * 16}%,.55)`); neb.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = neb; c.fillRect(0, 0, W, H);
+    if (api.state !== 'pause') starY += dt * (60 + env * 320 + (fever ? 300 : 0)) * S;
+    for (let i = 0; i < 110; i++) {
+      const hsh = Math.sin(i * 91.7) * 43758.5453, r1 = hsh - Math.floor(hsh), r2 = (hsh * 7.3) - Math.floor(hsh * 7.3), dp = 0.25 + r2 * 0.75;
+      const y = (r1 * H + starY * dp) % H, len = 1 + dp * (env * 14 + (fever ? 16 : 0));
+      c.fillStyle = `rgba(200,220,255,${0.15 + dp * 0.55})`; c.fillRect(((i * 137.5) % 1000) / 1000 * W, y, 1.2 + dp, len);
+    }
+    if (!playing) { fx.step(dt); return; }
+
+    /* ---- 進行 ---- */
+    if (run) {
+      J.update();
+      const P = api.pointer;
+      let tx = P.x < -900 ? W / 2 : P.x, ty = P.x < -900 ? H * 0.82 : P.touch ? P.y - 70 : P.y;
+      if (api.auto) {                                   // お手本: いちばん下の敵の真下へ
+        let low = null; for (const e of enemies) if (e.y > 0 && (!low || e.y > low.y)) low = e;
+        let gem = null; for (const g of gems) if (g.y > H * 0.4 && (!gem || g.y > gem.y)) gem = g;
+        tx = gem ? gem.x : low ? low.x : W / 2; ty = gem ? clamp(gem.y, H * 0.6, H * 0.9) : H * 0.82;
+      }
+      const k = 1 - Math.exp(-dt * 16);
+      player.x += (clamp(tx, 20, W - 20) - player.x) * k; player.y += (clamp(ty, 60, H - 30) - player.y) * k;
+      player.inv = Math.max(0, player.inv - dt);
+
+      while (spIdx < spawns.length && spawns[spIdx].t <= t) spawn(api, spawns[spIdx++]);
+      while (fireIdx < notes.length && notes[fireIdx].t <= t) volley(api, notes[fireIdx++]);
+      if (t >= basicAt) { basicAt = t + 0.34; shot(player.x, player.y - 20 * S, 0, -900 * S, { hue: 200, dmg: 0.8, r: 3 }); }      // 静かな所でも撃てる通常弾
+      if (fever && t >= feverAt) { feverAt = t + 0.1; for (const a of [-0.22, 0, 0.22]) shot(player.x, player.y - 20 * S, Math.sin(a) * 1000 * S, -Math.cos(a) * 1000 * S, { hue: (pn * 0.6) % 360, dmg: 1.5 }); }
+
+      // 弾
+      for (const b of bullets) {
+        b.life -= dt;
+        if (b.homing && enemies.length) {
+          let best = null, bd = 1e9; for (const e of enemies) { const d = (e.x - b.x) ** 2 + (e.y - b.y) ** 2; if (d < bd && e.y > -20) { bd = d; best = e; } }
+          if (best) { const sp = Math.hypot(b.vx, b.vy) + 500 * S * dt, a = Math.atan2(best.y - b.y, best.x - b.x), ca = Math.atan2(b.vy, b.vx);
+            let da = a - ca; while (da > Math.PI) da -= TAU; while (da < -Math.PI) da += TAU;
+            const na = ca + clamp(da, -9 * dt, 9 * dt); b.vx = Math.cos(na) * Math.min(sp, 760 * S); b.vy = Math.sin(na) * Math.min(sp, 760 * S); }
+        }
+        b.x += b.vx * dt; b.y += b.vy * dt;
+        if (b.y < -30 || b.y > H + 30 || b.x < -30 || b.x > W + 30 || b.life <= 0) { b.dead = true; continue; }
+        for (const e of enemies) {
+          if (Math.hypot(e.x - b.x, e.y - b.y) < e.r + b.r) {
+            b.dead = true; fx.burst(b.x, b.y, 3, { c: `hsl(${b.hue} 100% 75%)`, v1: 180, l1: 0.3 });
+            if (b.splash) {
+              fx.burst(b.x, b.y, 18, { colors: ['#ffb347', '#fff'], v1: 380 }); waves.push({ x: b.x, y: b.y, t0: pn, R: b.splash });
+              for (const o of enemies.slice()) if (o !== e && Math.hypot(o.x - b.x, o.y - b.y) < b.splash + o.r) hurt(api, o, b.dmg * 0.6);
+            }
+            hurt(api, e, b.dmg); break;
+          }
+        }
+      }
+      bullets = bullets.filter(b => !b.dead);
+
+      // 敵
+      for (const e of enemies.slice()) {
+        if (e.hp <= 0) continue;
+        e.t += dt;
+        if (e.kind === 'drift') { e.x = e.x0 + Math.sin(e.t * 1.6 + e.ph) * 40 * S; e.y += e.vy * dt; }
+        else if (e.kind === 'dash') {
+          if (e.t < e.wait) e.y += e.vy * dt;
+          else { if (!e.aim) { const a = Math.atan2(player.y - e.y, player.x - e.x); e.aim = true; e.vx = Math.cos(a) * 60 * S; e.vy = Math.sin(a) * 60 * S; }
+            e.vx *= 1 + 2.4 * dt; e.vy *= 1 + 2.4 * dt; e.x += e.vx * dt; e.y += e.vy * dt; }
+        } else if (e.kind === 'tank') e.y += e.vy * dt;
+        else {                                           // shoot / boss: 決まった高さで止まって撃つ
+          if (e.y < e.stopY) e.y += e.vy * dt;
+          else {
+            e.x = e.x0 + Math.sin(e.t * (e.kind === 'boss' ? 0.7 : 1) + e.ph) * (e.kind === 'boss' ? W * 0.28 : 50 * S);
+            e.fire -= dt;
+            if (e.fire <= 0) {
+              e.fire = D.fire * (e.kind === 'boss' ? 0.65 : 1);
+              if (e.kind === 'boss') { const n = api.diff === 'hard' ? 16 : 12, o = rand(0, TAU); for (let i = 0; i < n; i++) ebul.push({ x: e.x, y: e.y, vx: Math.cos(o + i / n * TAU) * D.ebs * 0.8 * S, vy: Math.sin(o + i / n * TAU) * D.ebs * 0.8 * S }); }
+              else { const a = Math.atan2(player.y - e.y, player.x - e.x); ebul.push({ x: e.x, y: e.y, vx: Math.cos(a) * D.ebs * S, vy: Math.sin(a) * D.ebs * S }); }
+            }
+          }
+        }
+        if (e.y > H + 70 || e.x < -90 || e.x > W + 90) { enemies.splice(enemies.indexOf(e), 1); continue; }
+        if (Math.hypot(e.x - player.x, e.y - player.y) < e.r + 12 * S) {
+          if (fever) hurt(api, e, 6); else if (player.inv <= 0) playerHit(api);
+        }
+      }
+      for (const b of ebul) {
+        b.x += b.vx * dt; b.y += b.vy * dt;
+        if (b.y > H + 20 || b.y < -20 || b.x < -20 || b.x > W + 20) b.dead = true;
+        else if (Math.hypot(b.x - player.x, b.y - player.y) < 12 * S) {
+          if (fever) { b.dead = true; J.add(50); fx.burst(b.x, b.y, 4, { c: '#ffe08a', v1: 160 }); }
+          else if (player.inv <= 0) playerHit(api);
+        }
+      }
+      ebul = ebul.filter(b => !b.dead);
+
+      // ジェム: 近づくと吸い寄せられる
+      for (const g of gems) {
+        g.age += dt;
+        const dx = player.x - g.x, dy = player.y - g.y, d = Math.hypot(dx, dy) || 1;
+        if (fever || d < 190 * S) { const a = (fever ? 2600 : 1700) * S * dt; g.vx += dx / d * a; g.vy += dy / d * a; g.vx *= 0.9; g.vy *= 0.9; }
+        else { g.vx *= Math.pow(0.05, dt); g.vy += (115 * S - g.vy) * dt * 3; }
+        g.x += g.vx * dt; g.y += g.vy * dt;
+        if (d < 26 * S) {
+          g.dead = true; xp++; counts.gems++; J.add(100);
+          gemStreak = pn - lastGem < 450 ? Math.min(14, gemStreak + 1) : 0; lastGem = pn;
+          RG.sfx.tone(880 * Math.pow(2, gemStreak / 12), 0.09, 0.07, 'sine');
+          const need = 5 + level * 6;
+          if (xp >= need && level < 8) {
+            xp -= need; level++; J.say('LEVEL UP!', '#7dffb0', 0.95); RG.sfx.rise(Math.min(4, level));
+            fx.burst(player.x, player.y, 40, { colors: ['#7dffb0', '#fff'], v0: 200, v1: 560 }); waves.push({ x: player.x, y: player.y, t0: pn, R: 200 * S });
+          }
+        } else if (g.y > H + 20) g.dead = true;
+      }
+      gems = gems.filter(g => !g.dead);
+    }
+    fx.step(dt);
+
+    /* ---- 描画 ---- */
+    c.save();
+    c.translate((Math.random() - 0.5) * fx.shake, (Math.random() - 0.5) * fx.shake);
+    for (const g of gems) {                                 // ジェム
+      c.save(); c.translate(g.x, g.y); c.rotate(g.age * 4); c.fillStyle = '#7dffb0'; c.shadowColor = '#7dffb0'; c.shadowBlur = 8;
+      poly(c, 4, 6 * S); c.fill(); c.restore();
+    }
+    for (const e of enemies) {                              // 敵
+      const E = ENEMY[e.kind], hit = pn - e.flash < 70;
+      c.save(); c.translate(e.x, e.y);
+      c.fillStyle = hit ? '#fff' : E.col + '33'; c.strokeStyle = hit ? '#fff' : E.col; c.lineWidth = 2.5; c.shadowColor = E.col; c.shadowBlur = e.kind === 'boss' ? 26 : 9;
+      if (e.kind === 'drift') poly(c, 3, e.r, Math.PI / 2);
+      else if (e.kind === 'dash') { c.rotate(e.aim ? Math.atan2(e.vy, e.vx) - Math.PI / 2 : 0); c.beginPath(); c.moveTo(0, e.r * 1.3); c.lineTo(e.r * 0.8, -e.r); c.lineTo(0, -e.r * 0.4); c.lineTo(-e.r * 0.8, -e.r); c.closePath(); }
+      else if (e.kind === 'shoot') poly(c, 4, e.r, e.t);
+      else if (e.kind === 'tank') poly(c, 6, e.r, e.t * 0.5);
+      else poly(c, 8, e.r, e.t * 0.4);
+      c.fill(); c.stroke(); c.shadowBlur = 0;
+      if (e.kind === 'boss') { c.strokeStyle = '#ff8f8f'; poly(c, 4, e.r * 0.5, -e.t); c.stroke(); }
+      if (e.max > 3 && e.kind !== 'boss') { c.fillStyle = 'rgba(0,0,0,.5)'; c.fillRect(-e.r, -e.r - 9, e.r * 2, 3); c.fillStyle = E.col; c.fillRect(-e.r, -e.r - 9, e.r * 2 * e.hp / e.max, 3); }
+      c.restore();
+    }
+    c.save(); c.globalCompositeOperation = 'lighter'; c.lineCap = 'round';
+    for (const b of bullets) {                              // 自分の弾
+      c.strokeStyle = `hsl(${b.hue} 100% 65%)`; c.lineWidth = b.r * 2;
+      c.beginPath(); c.moveTo(b.x - b.vx * 0.022, b.y - b.vy * 0.022); c.lineTo(b.x, b.y); c.stroke();
+      c.strokeStyle = '#fff'; c.lineWidth = b.r * 0.8; c.beginPath(); c.moveTo(b.x - b.vx * 0.008, b.y - b.vy * 0.008); c.lineTo(b.x, b.y); c.stroke();
+    }
+    for (let i = waves.length - 1; i >= 0; i--) {           // 衝撃波
+      const w = waves[i], p = Math.max(0, (pn - w.t0) / 380);
+      if (p >= 1) { waves.splice(i, 1); continue; }
+      c.strokeStyle = `rgba(255,255,255,${1 - p})`; c.lineWidth = 6 * (1 - p) + 1; c.beginPath(); c.arc(w.x, w.y, w.R * (1 - (1 - p) * (1 - p)), 0, TAU); c.stroke();
+    }
+    c.restore();
+    for (const b of ebul) {                                 // 敵の弾 (はっきり見える赤)
+      c.fillStyle = '#ff3b6b'; c.shadowColor = '#ff3b6b'; c.shadowBlur = 10; c.beginPath(); c.arc(b.x, b.y, 7 * S, 0, TAU); c.fill(); c.shadowBlur = 0;
+      c.fillStyle = '#fff'; c.beginPath(); c.arc(b.x, b.y, 3 * S, 0, TAU); c.fill();
+    }
+    fx.draw(c);
+    // 自機
+    if (player.inv <= 0 || Math.floor(pn / 70) % 2) {
+      const col = fever ? `hsl(${(pn * 0.7) % 360} 100% 65%)` : '#5ce1ff';
+      if (run) fx.add(player.x + rand(-5, 5), player.y + 16 * S, rand(-20, 20), rand(160, 320) * S, { life: rand(0.12, 0.28), c: col, s: 3 });
+      c.save(); c.translate(player.x, player.y); c.scale(S, S); c.shadowColor = col; c.shadowBlur = fever ? 34 : 18;
+      c.fillStyle = '#f4faff'; c.beginPath(); c.moveTo(0, -24); c.lineTo(20, 16); c.lineTo(0, 8); c.lineTo(-20, 16); c.closePath(); c.fill(); c.shadowBlur = 0;
+      c.fillStyle = col; c.beginPath(); c.arc(0, 2, 4.5, 0, TAU); c.fill();     // 当たり判定はこの小さな点
+      if (fever) { c.strokeStyle = col; c.lineWidth = 2; c.globalAlpha = 0.6; c.beginPath(); c.arc(0, 0, 34 + Math.sin(pn / 60) * 4, 0, TAU); c.stroke(); }
+      c.restore();
+    }
+    fx.drawTexts(c);
+    c.restore();
+    fx.drawFlash(c, W, H);
+    J.draw(c);
+    // 経験値バー / いまの武器 / ボスの体力
+    const need = 5 + level * 6;
+    c.fillStyle = 'rgba(160,175,255,.18)'; c.fillRect(18, 72, 130, 4);
+    c.fillStyle = '#7dffb0'; c.fillRect(18, 72, 130 * (level >= 8 ? 1 : clamp(xp / need, 0, 1)), 4);
+    if (lastWeapon >= 0) { c.fillStyle = `hsl(${HUES[lastWeapon]} 100% 72%)`; c.font = `700 12px ${RG.FONT}`; c.textAlign = 'left'; c.textBaseline = 'alphabetic'; c.fillText('♪ ' + WEAPON[lastWeapon], 18, 94); }
+    const boss = enemies.find(e => e.kind === 'boss');
+    if (boss) {
+      const bw = Math.min(360, W * 0.5);
+      c.fillStyle = 'rgba(0,0,0,.5)'; c.fillRect(W / 2 - bw / 2, 92, bw, 7);
+      c.fillStyle = '#ff5d6c'; c.fillRect(W / 2 - bw / 2, 92, bw * clamp(boss.hp / boss.max, 0, 1), 7);
+      c.fillStyle = '#ffb0b8'; c.font = `700 11px ${RG.FONT}`; c.textAlign = 'center'; c.fillText('BOSS', W / 2, 112);
+    }
+  },
+});
+</script>
+</body>
+</html>

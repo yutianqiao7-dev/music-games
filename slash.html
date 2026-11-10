@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>ビートスラッシュ - 音を斬れ</title>
+<link rel="stylesheet" href="common.css">
+</head>
+<body>
+<script src="common.js"></script>
+<script>
+'use strict';
+const { TAU, clamp, rand } = RG;
+const DIFF = {
+  easy:   { mult: 1.7,  gap: 0.55, base: 0.06,  per: 0.22, max: 0.28, size: 1.18 },
+  normal: { mult: 1.45, gap: 0.33, base: 0.05,  per: 0.30, max: 0.34, size: 1 },
+  hard:   { mult: 1.25, gap: 0.20, base: 0.045, per: 0.38, max: 0.42, size: 0.92 },
+};
+const HUES = [350, 275, 160, 200];      // 音の高さごとのクリスタルの色
+const TF = 0.95;                        // 飛び出してから頂点までの秒数 (頂点 = 音の瞬間)
+const KIND = {
+  crit: { label: '会心!', color: '#ffe08a', w: 1 },
+  good: { label: '良し',  color: '#9ff0c8', w: 0.7 },
+  ok:   { label: '斬',    color: '#9cc4ff', w: 0.35 },
+};
+const fx = new RG.Fx();
+let notes = [], head = 0, ringIdx = 0, J = null, trail = [], halves = [], slashes = [], rings = [];
+let stroke = { n: 0, t: 0 }, zoom = 0, counts = {}, maxChain = 1, idleRing = 0;
+
+function place(api) {
+  const { W, H, S } = api, size = DIFF[api.diff].size;
+  for (const n of notes) {
+    n.x = W * (0.1 + 0.8 * n.u); n.y = H * (0.2 + 0.4 * n.v);
+    n.vx = (n.r1 - 0.5) * 170 * S; n.g = (H + 90 - n.y) / (TF * TF);
+    n.r = (n.big ? 66 : 42) * S * size; n.rot = n.r2 * TAU; n.spin = (n.r1 - 0.5) * 5;
+  }
+}
+const pos = (n, tau) => ({ x: n.x + n.vx * tau, y: n.y + n.g * tau * tau });
+function distSeg(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+  const t = l2 ? clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / l2, 0, 1) : 0;
+  return Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t));
+}
+
+function cut(api, n, ang, tau, p) {
+  const S = api.S, a = Math.abs(tau), kind = J.feverOn || a <= 0.085 ? 'crit' : a <= 0.19 ? 'good' : 'ok', K = KIND[kind];
+  n.done = true; counts[kind]++;
+  const pn = performance.now();
+  stroke.n = pn - stroke.t < 300 ? stroke.n + 1 : 1; stroke.t = pn;      // 一振りでまとめて斬ると連鎖
+  const chain = Math.min(5, stroke.n); if (chain > maxChain) maxChain = chain;
+  const gain = J.hit(K.w, { mul: (n.big ? 2.5 : 1) * (1 + 0.5 * (chain - 1)) });
+  const hue = n.big ? 45 : HUES[n.type], col = `hsl(${hue} 100% 70%)`;
+  const nx = -Math.sin(ang), ny = Math.cos(ang);
+  for (const side of [1, -1]) {
+    halves.push({ x: p.x, y: p.y, vx: nx * side * rand(150, 260) * S + Math.cos(ang) * 90 * S + n.vx, vy: ny * side * rand(150, 260) * S - 140 * S,
+      rot: n.rot + n.spin * tau, spin: side * rand(2, 6), ang, side, r: n.r, hue, age: 0 });
+  }
+  slashes.push({ x: p.x, y: p.y, ang, len: n.r * (kind === 'crit' ? 5.5 : 3.4), t0: pn, crit: kind === 'crit' });
+  fx.burst(p.x, p.y, kind === 'crit' ? 30 : 14, { colors: [col, '#fff'], v0: 120, v1: kind === 'crit' ? 640 : 380, g: 520 * S, s: kind === 'crit' ? 3 : 2 });
+  fx.text(p.x, p.y - n.r - 6, K.label, K.color, kind === 'crit' ? 24 : 18);
+  fx.text(p.x, p.y - n.r - 30, '+' + gain.toLocaleString(), '#fff', gain >= 4000 ? 20 : 14);
+  if (chain >= 2) fx.text(p.x, p.y + n.r + 30, ['', '', '二連斬り!', '三連斬り!', '四連斬り!', '五連斬り!'][chain], '#8ff', 20);
+  RG.sfx.noise(1700, 0.13, 0.3, 'bandpass', 3);
+  RG.sfx.chime(J.combo, kind === 'crit');
+  if (kind === 'crit') { zoom = Math.max(zoom, 0.7); fx.shake = Math.max(fx.shake, 3); }
+  if (n.big) {
+    fx.flash = 0.35; fx.shake = 13; RG.sfx.cheer(0.4); RG.sfx.noise(300, 0.5, 0.5);
+    fx.burst(p.x, p.y, 46, { colors: ['#ffe08a', '#fff', '#ffb070'], v0: 200, v1: 900, g: 300 * S, s: 3, l1: 1.1 });
+  }
+}
+
+// 刃の軌跡 a→b が触れたクリスタルを斬る
+function sweep(api, a, b) {
+  const t = api.time();
+  for (let i = head; i < notes.length; i++) {
+    const n = notes[i], tau = t - n.t;
+    if (tau < -TF) break;
+    if (n.done || tau > TF) continue;
+    const p = pos(n, tau);
+    if (distSeg(p, a, b) <= n.r * 1.05) cut(api, n, Math.atan2(b.y - a.y, b.x - a.x), tau, p);
+  }
+}
+
+function drawCrystal(c, r, hue, glow) {
+  const pts = [[0, -r], [r * 0.78, -r * 0.36], [r * 0.78, r * 0.36], [0, r], [-r * 0.78, r * 0.36], [-r * 0.78, -r * 0.36]];
+  c.beginPath(); pts.forEach((p, i) => i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1])); c.closePath();
+  const g = c.createLinearGradient(-r, -r, r, r);
+  g.addColorStop(0, `hsl(${hue} 100% 86%)`); g.addColorStop(0.45, `hsl(${hue} 95% 60%)`); g.addColorStop(1, `hsl(${hue + 30} 90% 32%)`);
+  c.shadowColor = `hsl(${hue} 100% 65%)`; c.shadowBlur = glow; c.fillStyle = g; c.fill(); c.shadowBlur = 0;
+  c.strokeStyle = `hsla(${hue},100%,92%,.9)`; c.lineWidth = 1.6; c.stroke();
+  c.strokeStyle = `hsla(${hue},100%,95%,.35)`; c.lineWidth = 1;
+  c.beginPath();
+  c.moveTo(-r * 0.78, -r * 0.36); c.lineTo(0, -r * 0.1); c.lineTo(r * 0.78, -r * 0.36);
+  c.moveTo(-r * 0.78, r * 0.36); c.lineTo(0, r * 0.1); c.lineTo(r * 0.78, r * 0.36);
+  c.moveTo(0, -r); c.lineTo(0, r); c.stroke();
+  c.fillStyle = 'rgba(255,255,255,.28)';
+  c.beginPath(); c.moveTo(0, -r); c.lineTo(-r * 0.78, -r * 0.36); c.lineTo(0, -r * 0.1); c.closePath(); c.fill();
+}
+
+RG.shell({
+  id: 'slash', title: 'ビートスラッシュ', sub: 'BEAT SLASH', colors: ['#7fe9ff', '#b08cff', '#ff7ab8'], hideCursor: true,
+  lead: '<b>曲の音に合わせてクリスタルが飛び出す。なぞって斬れ。</b>いちばん高く上がった瞬間が音の瞬間。そこで斬れば「会心」。',
+  how: [['一、待つ', '飛び出したクリスタルが頂点に来る瞬間(輪が重なる瞬間)が狙いどき'],
+        ['二、斬る', 'マウスを素早く動かして通り抜ける。スマホは指でなぞる'],
+        ['三、まとめる', '一振りで複数を斬ると「連斬り」で得点が跳ね上がる']],
+  hint: '連撃で得点が最大4倍。ゲージが満タンで<b style="color:var(--a1)">覚醒</b>し、すべてが会心になります。',
+  count: (feat, d) => RG.onsets(feat, DIFF[d]).length, countLabel: n => `クリスタル ${n} 個`,
+
+  start(api) {
+    const D = DIFF[api.diff];
+    notes = RG.flow(RG.onsets(api.song.feat, D), api.song.feat.seed, D, api.W / api.H);
+    place(api);
+    head = 0; ringIdx = 0; trail = []; halves = []; slashes = []; rings = []; stroke = { n: 0, t: 0 }; zoom = 0; maxChain = 1;
+    counts = { crit: 0, good: 0, ok: 0, miss: 0 }; fx.clear();
+    J = new RG.Juice(api, { combo: '連 撃', fever: '覚醒', feverDesc: '得点2倍・すべて会心', lead: api.auto ? 'お手本プレイ' : '頂点に来た瞬間に、なぞって斬れ',
+      sub: () => `精度 ${J.pct().toFixed(1)}%${api.auto ? ' ・ お手本' : ''}`,
+      onFever() { fx.flash = 0.5; fx.shake = 10; } });
+  },
+  resize(api) { if (notes.length && api.state !== 'title') place(api); },
+  quit() { notes = []; J = null; fx.clear(); },
+  end(api) {
+    api.finish({ score: J.score, pct: J.pct(), names: ['剣聖', '達人', '剣士', '見習い', '修行中'], title: counts.miss === 0 ? '全斬り' : '',
+      stats: [['会心', counts.crit, '#ffe08a'], ['良し', counts.good, '#9ff0c8'], ['斬', counts.ok, '#9cc4ff'], ['逃した', counts.miss, '#b0b4cc'],
+        ['最大連撃', J.maxCombo], ['最多連斬り', maxChain], ['覚醒', J.fevers + ' 回'], ['クリスタル', notes.length]] });
+  },
+
+  pointer(api, type) {
+    if (api.state !== 'play' || api.auto || type === 'up') return;
+    const P = api.pointer, now = performance.now(), prev = trail[trail.length - 1], cur = { x: P.x, y: P.y, t: now };
+    trail.push(cur);
+    if (!prev || now - prev.t > 80) return;
+    const speed = Math.hypot(cur.x - prev.x, cur.y - prev.y) / Math.max(1, now - prev.t) * 1000;
+    if (P.down || speed > 420 * api.S) sweep(api, prev, cur);       // 素早く動かしている間だけ「刃」になる
+  },
+
+  frame(api, dt) {
+    const { c, W, H, S } = api, pn = performance.now(), playing = api.state === 'play' || api.state === 'pause' || api.state === 'ending';
+    const t = playing ? api.time() : 0, fever = J && J.feverOn && playing;
+
+    // 背景
+    const bg = c.createRadialGradient(W / 2, H * 0.45, 0, W / 2, H * 0.45, Math.max(W, H) * 0.75);
+    if (fever) { const h = (pn * 0.05) % 360; bg.addColorStop(0, `hsl(${h} 70% 22%)`); bg.addColorStop(1, `hsl(${(h + 60) % 360} 80% 5%)`); }
+    else { bg.addColorStop(0, `hsl(250 55% ${14 + RG.audio.bass * 9}%)`); bg.addColorStop(1, '#04050f'); }
+    c.fillStyle = bg; c.fillRect(0, 0, W, H);
+    if (!playing && pn > idleRing) { idleRing = pn + 1100; rings.push({ t0: pn, hue: 220 }); }
+    c.lineWidth = 2;
+    for (let i = rings.length - 1; i >= 0; i--) {
+      const r = rings[i], p = (pn - r.t0) / 1000;
+      if (p >= 1) { rings.splice(i, 1); continue; }
+      c.strokeStyle = `hsla(${r.hue},100%,70%,${(1 - p) * 0.22})`;
+      c.beginPath(); c.arc(W / 2, H * 0.45, p * Math.max(W, H) * 0.7, 0, TAU); c.stroke();
+    }
+    if (RG.audio.spec) {
+      const n = 48, bw = W / n;
+      for (let i = 0; i < n; i++) {
+        const h = RG.audio.spec[i + 1] / 255 * H * 0.2;
+        c.fillStyle = `hsla(${200 + i * 3},90%,65%,.13)`; c.fillRect(i * bw + 1, H - h, bw - 2, h);
+      }
+    }
+    if (!playing || !J) { fx.step(dt); return; }
+
+    if (api.state === 'play') {
+      J.update();
+      for (let i = head; i < notes.length; i++) {
+        const n = notes[i], tau = t - n.t;
+        if (tau < -TF) break;
+        if (n.done) continue;
+        if (api.auto && tau >= 0) {                      // お手本: 頂点で自動的に斬る
+          const p = pos(n, tau), a = rand(0, TAU), L = n.r * 2.4;
+          trail.push({ x: p.x - Math.cos(a) * L, y: p.y - Math.sin(a) * L, t: pn - 30 }, { x: p.x + Math.cos(a) * L, y: p.y + Math.sin(a) * L, t: pn });
+          cut(api, n, a, 0, p); continue;
+        }
+        if (tau > TF) { n.done = true; counts.miss++; J.miss(); fx.text(clamp(n.x + n.vx * TF, 50, W - 50), H - 60, '逃した', '#9da1bb', 15); }
+      }
+      while (head < notes.length && notes[head].done) head++;
+      while (ringIdx < notes.length && notes[ringIdx].t <= t) { rings.push({ t0: pn, hue: notes[ringIdx].big ? 45 : HUES[notes[ringIdx].type] }); ringIdx++; }
+    }
+    fx.step(dt);
+    zoom *= Math.pow(0.8, dt * 60);
+
+    c.save();
+    const sc = 1 + zoom * 0.02;
+    c.translate(W / 2 + (Math.random() - 0.5) * fx.shake, H / 2 + (Math.random() - 0.5) * fx.shake); c.scale(sc, sc); c.translate(-W / 2, -H / 2);
+
+    // クリスタル
+    for (let i = notes.length - 1; i >= head; i--) {
+      const n = notes[i], tau = t - n.t;
+      if (n.done || tau < -TF || tau > TF) continue;
+      const p = pos(n, tau), hue = n.big ? 45 : HUES[n.type], near = Math.max(0, 1 - Math.abs(tau) / 0.12);
+      if (tau < 0) {                                     // 縮む輪: 重なった瞬間が会心
+        const k = -tau / TF;
+        c.strokeStyle = `rgba(255,255,255,${0.15 + 0.7 * (1 - k)})`; c.lineWidth = 2.2;
+        c.beginPath(); c.arc(p.x, p.y, n.r * (1.12 + 2.2 * k), 0, TAU); c.stroke();
+      }
+      c.save(); c.translate(p.x, p.y); c.rotate(n.rot + n.spin * tau);
+      const s = 1 + near * 0.16; c.scale(s, s);
+      drawCrystal(c, n.r, hue, 14 + near * 30 + (n.big ? 14 : 0));
+      if (near > 0) { c.globalAlpha = near * 0.55; c.fillStyle = '#fff'; c.beginPath(); c.arc(0, 0, n.r * 0.9, 0, TAU); c.fill(); }
+      c.restore();
+    }
+    // 斬られた半分
+    for (let i = halves.length - 1; i >= 0; i--) {
+      const h = halves[i]; h.age += dt;
+      if (h.age > 0.9) { halves.splice(i, 1); continue; }
+      h.vy += 1500 * S * dt; h.x += h.vx * dt; h.y += h.vy * dt; h.rot += h.spin * dt;
+      c.save(); c.globalAlpha = 1 - h.age / 0.9; c.translate(h.x, h.y); c.rotate(h.ang);
+      c.beginPath(); c.rect(-h.r * 3, h.side > 0 ? 0 : -h.r * 3, h.r * 6, h.r * 3); c.clip();
+      c.rotate(h.rot - h.ang); drawCrystal(c, h.r, h.hue, 0);
+      c.restore();
+    }
+    // 斬撃の閃光
+    c.save(); c.globalCompositeOperation = 'lighter'; c.lineCap = 'round';
+    for (let i = slashes.length - 1; i >= 0; i--) {
+      const s = slashes[i], p = (pn - s.t0) / (s.crit ? 260 : 180);
+      if (p >= 1) { slashes.splice(i, 1); continue; }
+      const L = s.len * (0.6 + p * 0.6), dx = Math.cos(s.ang) * L, dy = Math.sin(s.ang) * L;
+      c.globalAlpha = 1 - p; c.strokeStyle = s.crit ? '#fff6d0' : '#cfe8ff'; c.lineWidth = (s.crit ? 9 : 5) * (1 - p) + 1;
+      c.beginPath(); c.moveTo(s.x - dx, s.y - dy); c.lineTo(s.x + dx, s.y + dy); c.stroke();
+    }
+    // 刃の軌跡
+    while (trail.length && pn - trail[0].t > 170) trail.shift();
+    for (let i = 1; i < trail.length; i++) {
+      const a = trail[i - 1], b = trail[i], k = 1 - (pn - b.t) / 170;
+      if (b.t - a.t > 80) continue;
+      c.globalAlpha = k * 0.7; c.strokeStyle = fever ? `hsl(${(pn * 0.6 + i * 25) % 360} 100% 65%)` : '#6fe3ff'; c.lineWidth = (fever ? 22 : 14) * k;
+      c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke();
+      c.globalAlpha = k; c.strokeStyle = '#fff'; c.lineWidth = 5 * k;
+      c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke();
+    }
+    c.restore();
+    fx.draw(c);
+    fx.drawTexts(c);
+    if (!api.pointer.touch && !api.auto && api.state === 'play') {          // カーソル
+      const P = api.pointer;
+      c.fillStyle = '#fff'; c.shadowColor = '#6fe3ff'; c.shadowBlur = 12;
+      c.beginPath(); c.moveTo(P.x, P.y - 7); c.lineTo(P.x + 5, P.y); c.lineTo(P.x, P.y + 7); c.lineTo(P.x - 5, P.y); c.closePath(); c.fill(); c.shadowBlur = 0;
+    }
+    c.restore();
+    fx.drawFlash(c, W, H);
+    J.draw(c);
+  },
+});
+</script>
+</body>
+</html>

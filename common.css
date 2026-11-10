@@ -1,0 +1,76 @@
+/* 4つのゲームで共有する見た目 (色は各ゲームが --a1 〜 --a3 で指定) */
+:root {
+  --a1: #6cf; --a2: #a8f; --a3: #f7a;
+  --panel: rgba(9, 11, 28, .78);
+  --line: rgba(160, 175, 255, .18);
+  --text: #f1f0ff;
+  --sub: #9fa4cf;
+  --font: "Segoe UI", "Yu Gothic UI", "Hiragino Sans", Meiryo, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: #04050f; color: var(--text); font-family: var(--font); overflow: hidden; }
+#cv { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+#cv.playing { cursor: none; }
+.screen { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 18px; overflow-y: auto; z-index: 10; }
+.screen.on { display: flex; }
+.dim { background: rgba(2, 3, 12, .6); }
+.card { width: 100%; max-width: 520px; margin: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 20px;
+  padding: 24px 28px; box-shadow: 0 24px 80px rgba(0,0,0,.55); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.back { color: var(--sub); font-size: 12px; text-decoration: none; }
+.back:hover { color: var(--text); }
+.brand { display: flex; align-items: baseline; gap: 12px; margin-top: 6px; flex-wrap: wrap; }
+h1 { margin: 0; font-weight: 800; font-style: italic; font-size: 38px; letter-spacing: .02em;
+  background: linear-gradient(100deg, var(--a1), var(--a2) 55%, var(--a3));
+  -webkit-background-clip: text; background-clip: text; color: transparent; padding-right: 6px; }
+.brand small { color: var(--sub); letter-spacing: .3em; font-size: 11px; }
+h2 { margin: 0 0 16px; font-size: 22px; }
+p.lead { margin: 8px 0 16px; color: var(--sub); font-size: 14px; line-height: 1.7; }
+p.lead b { color: var(--text); font-weight: 600; }
+#drop { border: 1.5px dashed rgba(160,175,255,.35); border-radius: 14px; padding: 20px 16px; text-align: center; cursor: pointer;
+  transition: .15s; color: var(--sub); font-size: 13px; }
+#drop:hover, #drop.over { border-color: var(--a1); color: var(--text); background: rgba(160,175,255,.06); }
+#drop strong { display: block; color: var(--text); font-size: 16px; margin-bottom: 4px; }
+#fileName { margin-top: 8px; color: var(--a1); font-size: 14px; word-break: break-all; }
+.bar { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; margin-top: 10px; display: none; }
+.bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--a1), var(--a3)); }
+.row { display: flex; align-items: center; gap: 12px; margin-top: 12px; font-size: 14px; }
+.row > label:first-child, .row > span:first-child { width: 92px; color: var(--sub); flex: none; }
+.seg { display: flex; flex: 1; background: rgba(0,0,0,.35); border-radius: 10px; padding: 3px; }
+.seg button { flex: 1; border: 0; background: none; color: var(--sub); padding: 7px 0; border-radius: 8px; font: inherit; cursor: pointer; }
+.seg button.sel { background: rgba(160,175,255,.2); color: var(--text); font-weight: 600; }
+input[type=range] { flex: 1; accent-color: var(--a1); min-width: 0; }
+input[type=checkbox] { accent-color: var(--a1); width: 17px; height: 17px; }
+.val { width: 62px; text-align: right; color: var(--sub); font-variant-numeric: tabular-nums; flex: none; }
+.btn { display: block; width: 100%; margin-top: 10px; padding: 12px; border-radius: 12px; border: 1px solid var(--line);
+  background: rgba(0,0,0,.3); color: var(--text); font: inherit; font-size: 15px; cursor: pointer; }
+.btn:hover:not(:disabled) { border-color: var(--a1); }
+.btn.primary { margin-top: 16px; border: 0; font-weight: 800; color: #0a0d1c; font-size: 16px;
+  background: linear-gradient(100deg, var(--a1), var(--a2) 55%, var(--a3)); }
+.btn:disabled { opacity: .4; cursor: default; }
+.btns { display: flex; gap: 10px; }
+.how { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
+.how div { background: rgba(0,0,0,.28); border-radius: 10px; padding: 10px 8px; font-size: 12px; color: var(--sub); line-height: 1.55; text-align: center; }
+.how b { display: block; color: var(--a1); font-size: 14px; margin-bottom: 2px; }
+.hint { margin-top: 12px; font-size: 12px; color: var(--sub); line-height: 1.7; }
+kbd { background: rgba(0,0,0,.4); border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; color: var(--text); font-family: inherit; }
+.err { color: #ff8f8f; font-size: 13px; margin-top: 8px; min-height: 1em; }
+.resHead { display: flex; align-items: center; gap: 18px; }
+#rank { font-size: 76px; font-weight: 800; font-style: italic; line-height: 1; width: 86px; text-align: center; flex: none; }
+#rank.stamp { animation: stamp .55s cubic-bezier(.2, 1.6, .4, 1) .9s both; }
+@keyframes stamp { from { transform: scale(3.4) rotate(-14deg); opacity: 0; } to { transform: none; opacity: 1; } }
+#rankName { font-size: 22px; font-weight: 700; letter-spacing: .06em; }
+#resSong { color: var(--sub); font-size: 13px; word-break: break-all; margin-top: 4px; }
+#best { font-size: 13px; margin-top: 4px; color: var(--sub); }
+#best.new { color: var(--a1); font-weight: 700; animation: blink .5s steps(2) 1.4s 4; }
+@keyframes blink { 50% { opacity: .25; } }
+#rScore { font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums; margin-top: 14px; text-align: center;
+  background: linear-gradient(100deg, var(--a1), var(--a3)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+.stats div { background: rgba(0,0,0,.28); border-radius: 10px; padding: 8px 4px; text-align: center; font-size: 11.5px; color: var(--sub); }
+.stats b { display: block; font-size: 18px; color: var(--text); font-variant-numeric: tabular-nums; margin-top: 2px; }
+#pauseBtn { position: fixed; top: 14px; right: 14px; z-index: 5; display: none; width: 40px; height: 40px; border-radius: 50%;
+  border: 1px solid var(--line); background: rgba(9,11,28,.6); color: var(--text); font-size: 14px; cursor: pointer; }
+@media (max-width: 480px) {
+  .card { padding: 20px 18px; } h1 { font-size: 31px; }
+  .row > label:first-child, .row > span:first-child { width: 78px; }
+}

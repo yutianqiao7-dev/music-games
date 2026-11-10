@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>ネオンサーフ - 曲の上を走れ</title>
+<link rel="stylesheet" href="common.css">
+</head>
+<body>
+<script src="common.js"></script>
+<script>
+'use strict';
+const { TAU, clamp, rand } = RG;
+const DIFF = {
+  easy:   { mult: 1.7,  gap: 0.50, spike: 0,    reach: 0.64 },
+  normal: { mult: 1.45, gap: 0.30, spike: 0.45, reach: 0.56 },
+  hard:   { mult: 1.25, gap: 0.19, spike: 0.75, reach: 0.5 },
+};
+const HUES = [335, 45, 160, 195];
+const F = 7, ZMAX = 46, ZS = [0, 1, 2, 4, 6, 9, 13, 18, 24, 31, 39, 46];
+const fx = new RG.Fx();
+let objs = [], head = 0, J = null, cum = null, feat = null, px = 0, target = 0, counts = {}, blocks = 0, lastPx = 0, tiltNow = 0;
+
+/* 曲の盛り上がりに合わせて速くなる道。cum = 曲の各時点までに進んだ距離 */
+function buildRoad(f) {
+  feat = f; cum = new Float32Array(f.frames + 1);
+  for (let i = 0; i < f.frames; i++) cum[i + 1] = cum[i] + (7 + 14 * f.env[i]) * f.dt;
+}
+function distAt(t) {
+  if (!cum) return t * 9;
+  const x = t / feat.dt;
+  if (x <= 0) return t * 7;
+  if (x >= feat.frames) return cum[feat.frames] + (t - feat.duration) * 9;
+  const i = Math.floor(x); return cum[i] + (cum[i + 1] - cum[i]) * (x - i);
+}
+
+function buildChart(api) {
+  const D = DIFF[api.diff], rng = RG.rng(api.song.feat.seed + api.diff.length), notes = RG.onsets(api.song.feat, D);
+  objs = []; let lane = 0, prev = null;
+  for (const n of notes) {
+    if (prev) {
+      if (n.gap < 0.28) { const c = [lane, lane - 1, lane + 1].filter(l => l >= -1 && l <= 1); lane = rng() < 0.45 ? lane : c[1 + Math.floor(rng() * (c.length - 1))]; }
+      else if (rng() < 0.72) { const c = [-1, 0, 1].filter(l => l !== lane); lane = c[Math.floor(rng() * 2)]; }
+      // 間が空いたところにトゲ: 直前にいたレーンに置いて、よけさせる
+      if (n.gap >= 0.9 && rng() < D.spike) objs.push({ t: (prev.t + n.t) / 2, lane: prev.lane, spike: true, done: false });
+    }
+    n.lane = lane; objs.push(n); prev = n;
+  }
+  objs.sort((a, b) => a.t - b.t);
+  blocks = notes.length;
+}
+
+RG.shell({
+  id: 'surf', title: 'ネオンサーフ', sub: 'NEON SURF', colors: ['#ff6ad5', '#c774e8', '#5ce1ff'],
+  lead: '<b>曲そのものが光の道になる。</b>盛り上がるほど加速する道を走り、音のブロックを拾い集めよう。サビでは一気に速くなります。',
+  how: [['一、操縦', 'マウスを左右に動かす(<kbd>←</kbd> <kbd>→</kbd> / <kbd>A</kbd> <kbd>D</kbd> でも可)。スマホは指で'],
+        ['二、拾う', '光るブロックに機体を重ねる。真ん中で拾うと「ぴったり」'],
+        ['三、かわす', '赤いトゲは踏むとチェインが切れる。よければボーナス']],
+  hint: 'チェインで得点が最大4倍。ゲージ満タンで<b style="color:var(--a1)">オーバードライブ</b>：ブロックを吸い寄せ、トゲを粉砕します。',
+  count: (f, d) => RG.onsets(f, DIFF[d]).length, countLabel: n => `ブロック ${n} 個`,
+
+  start(api) {
+    buildRoad(api.song.feat); buildChart(api);
+    head = 0; px = 0; target = 0; counts = { just: 0, ok: 0, miss: 0, crash: 0, dodge: 0 }; fx.clear();
+    J = new RG.Juice(api, { combo: 'CHAIN', fever: 'オーバードライブ', feverDesc: '得点2倍・吸い寄せ・トゲ粉砕', lead: api.auto ? 'お手本プレイ' : '左右に動いてブロックを拾え',
+      sub: () => `回収 ${counts.just + counts.ok} / ${blocks}${api.auto ? ' ・ お手本' : ''}`,
+      onFever() { fx.flash = 0.5; fx.shake = 10; } });
+  },
+  quit() { objs = []; J = null; cum = null; fx.clear(); },
+  end(api) {
+    api.finish({ score: J.score, pct: J.pct() - counts.crash * 2, names: ['音速', 'エース', 'ライダー', 'ルーキー', '練習中'],
+      title: counts.miss === 0 && counts.crash === 0 ? '全回収' : '',
+      stats: [['ぴったり', counts.just, '#ffe08a'], ['OK', counts.ok, '#9ff0c8'], ['ミス', counts.miss, '#b0b4cc'], ['クラッシュ', counts.crash, '#ff8f8f'],
+        ['最大チェイン', J.maxCombo], ['トゲ回避', counts.dodge], ['オーバードライブ', J.fevers + ' 回'], ['ブロック', blocks]] });
+  },
+  pointer(api, type) {
+    if (api.state !== 'play' || api.auto || type === 'up') return;
+    const LW = Math.min(api.W * 0.2, 170 * api.S);
+    target = clamp((api.pointer.x - api.W / 2) / LW, -1.25, 1.25);
+  },
+  key(api, code, down) {
+    if (!down || api.auto) return;
+    if (code === 'ArrowLeft' || code === 'KeyA') target = Math.max(-1, Math.round(target) - 1);
+    if (code === 'ArrowRight' || code === 'KeyD') target = Math.min(1, Math.round(target) + 1);
+  },
+
+  frame(api, dt) {
+    const { c, W, H, S } = api, pn = performance.now(), playing = !!J && api.state !== 'title';
+    const t = playing ? api.time() : pn / 1000, d0 = distAt(playing ? t : t * 0.9), fever = playing && J.feverOn;
+    const cx = W / 2, hy = H * 0.36, py = H * 0.84, LW = Math.min(W * 0.2, 170 * S);
+    const curve = Math.sin(t * 0.21) * 0.7 + Math.sin(t * 0.09 + 2) * 0.5;
+    const speed = playing && feat ? RG.intensity(feat, Math.max(0, t)) : 0.3;
+    const X = (lp, p) => cx + lp * LW * p + curve * (1 - p) * (1 - p) * W * 0.32, Y = p => hy + (py - hy) * p, P = z => F / (F + z);
+
+    /* ---- 進行 ---- */
+    if (api.state === 'play') {
+      J.update();
+      if (api.auto) {                                   // お手本: 次のブロックへ向かい、トゲはよける
+        let nb = null, sp = null;
+        for (let i = head; i < objs.length && (!nb || !sp); i++) { const o = objs[i]; if (o.done) continue; if (o.spike) { if (!sp && !nb) sp = o; } else if (!nb) nb = o; }
+        target = nb ? nb.lane : 0;
+        if (sp && sp.t - t < 0.45 && Math.abs(target - sp.lane) < 0.5) target = sp.lane >= 0 ? sp.lane - 1 : sp.lane + 1;
+      }
+      px += (target - px) * (1 - Math.exp(-dt * 22));
+      while (head < objs.length && objs[head].t <= t) {
+        const o = objs[head++], ox = cx + o.lane * LW;
+        if (api.auto && !o.spike) px = target = o.lane;          // お手本は処理落ちしても取りこぼさない
+        const dx = Math.abs(px - o.lane);
+        o.done = true;
+        if (o.spike) {
+          if (fever) { J.add(300); fx.burst(ox, py - 20, 26, { colors: ['#ff5d6c', '#ffe08a'], v1: 520, g: 300 }); fx.text(ox, py - 70, '粉砕!', '#ffe08a', 18); RG.sfx.noise(900, 0.2, 0.3); }
+          else if (dx < 0.45) {
+            counts.crash++; J.miss(false); fx.shake = 15; fx.flash = 0.35; fx.flashColor = '255,60,80';
+            fx.burst(ox, py - 20, 30, { colors: ['#ff5d6c', '#fff'], v1: 600, g: 400 }); fx.text(ox, py - 80, 'クラッシュ!', '#ff8f8f', 22); RG.sfx.noise(260, 0.4, 0.6);
+          } else { counts.dodge++; const g = J.add(200); fx.text(cx + px * LW, py - 70, 'かわした +' + g, '#9cc4ff', 14); RG.sfx.tone(880, 0.12, 0.08, 'sine', 1320); }
+          continue;
+        }
+        const hue = o.big ? 45 : HUES[o.type];
+        if (dx < (fever ? 1.8 : DIFF[api.diff].reach)) {
+          const just = fever || dx < 0.24, gain = J.hit(just ? 1 : 0.7, { mul: o.big ? 2.5 : 1 });
+          counts[just ? 'just' : 'ok']++;
+          fx.burst(ox, py - 24, just ? 24 : 12, { colors: [`hsl(${hue} 100% 70%)`, '#fff'], ang: -Math.PI / 2, spread: 2.4, v0: 160, v1: just ? 620 : 380, g: 500 * S, s: just ? 3 : 2 });
+          fx.text(cx + px * LW, py - 78, just ? 'ぴったり!' : 'OK', just ? '#ffe08a' : '#9ff0c8', just ? 20 : 16);
+          fx.text(cx + px * LW, py - 100, '+' + gain.toLocaleString(), '#fff', gain >= 4000 ? 19 : 13);
+          RG.sfx.chime(J.combo, just);
+          if (o.big) { fx.flash = 0.3; fx.flashColor = '255,255,255'; fx.shake = 10; RG.sfx.noise(320, 0.5, 0.45); RG.sfx.cheer(0.4); }
+          else fx.flashColor = '255,255,255';
+        } else { counts.miss++; J.miss(); fx.text(ox, py - 60, 'ミス', '#9da1bb', 15); }
+      }
+    } else if (!playing) px = Math.sin(pn / 900) * 0.8;
+    fx.step(dt);
+
+    /* ---- 空と太陽 ---- */
+    const sky = c.createLinearGradient(0, 0, 0, hy);
+    if (fever) { const h = (pn * 0.06) % 360; sky.addColorStop(0, `hsl(${h} 80% 8%)`); sky.addColorStop(1, `hsl(${(h + 50) % 360} 85% 34%)`); }
+    else { sky.addColorStop(0, '#07001c'); sky.addColorStop(0.7, '#2a0a52'); sky.addColorStop(1, `hsl(310 70% ${24 + RG.audio.bass * 16}%)`); }
+    c.fillStyle = sky; c.fillRect(0, 0, W, hy + 1);
+    const sx = cx + curve * W * 0.32, sr = (105 + RG.audio.bass * 26) * S;
+    c.save(); c.beginPath(); c.rect(0, 0, W, hy); c.clip();
+    const sg = c.createLinearGradient(0, hy - sr * 1.6, 0, hy);
+    sg.addColorStop(0, '#ffe66d'); sg.addColorStop(0.6, '#ff6ad5'); sg.addColorStop(1, '#c14bff');
+    c.fillStyle = sg; c.shadowColor = '#ff6ad5'; c.shadowBlur = 50; c.beginPath(); c.arc(sx, hy - sr * 0.25, sr, 0, TAU); c.fill(); c.shadowBlur = 0;
+    c.fillStyle = '#1d0840';
+    for (let i = 0; i < 6; i++) c.fillRect(sx - sr, hy - sr * 0.08 - i * sr * 0.2, sr * 2, sr * 0.035 * (6 - i));
+    c.restore();
+    c.fillStyle = '#05021a'; c.fillRect(0, hy, W, H - hy);
+
+    c.save();
+    c.translate((Math.random() - 0.5) * fx.shake, (Math.random() - 0.5) * fx.shake);
+
+    /* ---- 道 ---- */
+    const k0 = Math.floor(d0 / 3);
+    for (let k = k0 + 16; k >= k0; k--) {
+      const z1 = Math.min(ZMAX, k * 3 + 3 - d0), z2 = Math.max(0, k * 3 - d0);
+      if (z1 <= z2) continue;
+      const p1 = P(z1), p2 = P(z2);
+      c.fillStyle = fever ? `hsla(${(k * 24) % 360},100%,60%,${k % 2 ? 0.2 : 0.1})` : k % 2 ? 'rgba(140,90,255,.16)' : 'rgba(140,90,255,.06)';
+      c.beginPath(); c.moveTo(X(-1.5, p1), Y(p1)); c.lineTo(X(1.5, p1), Y(p1)); c.lineTo(X(1.5, p2), Y(p2)); c.lineTo(X(-1.5, p2), Y(p2)); c.closePath(); c.fill();
+    }
+    c.lineCap = 'round';
+    for (const [lp, col, w] of [[-1.5, '#5ce1ff', 3], [1.5, '#ff6ad5', 3], [-0.5, 'rgba(255,255,255,.22)', 1.5], [0.5, 'rgba(255,255,255,.22)', 1.5]]) {
+      c.strokeStyle = col; c.lineWidth = w; if (w > 2) { c.shadowColor = col; c.shadowBlur = 12; }
+      c.beginPath(); ZS.forEach((z, i) => { const p = P(z); i ? c.lineTo(X(lp, p), Y(p)) : c.moveTo(X(lp, p), Y(p)); }); c.stroke(); c.shadowBlur = 0;
+    }
+    // 道の脇を流れていく柱 (速さを感じさせる)
+    const m0 = Math.floor(d0 / 6);
+    for (let m = m0 + 8; m > m0; m--) {
+      const z = m * 6 - d0; if (z > ZMAX) continue;
+      const p = P(z), a = clamp((ZMAX - z) / 12, 0, 1);
+      for (const side of [-1, 1]) {
+        const x = X(side * 2.35, p), y = Y(p);
+        c.strokeStyle = side < 0 ? `rgba(92,225,255,${a})` : `rgba(255,106,213,${a})`; c.lineWidth = 3 * p + 0.5;
+        c.beginPath(); c.moveTo(x, y); c.lineTo(x, y - LW * 1.5 * p); c.stroke();
+      }
+    }
+    // スピード線
+    const sl = speed > 0.45 || fever ? Math.round(speed * 12 + (fever ? 14 : 0)) : 0;
+    c.strokeStyle = `rgba(255,255,255,${0.05 + speed * 0.07})`; c.lineWidth = 1.5;
+    for (let i = 0; i < sl; i++) {                       // 消失点から外へ流れる線 (道の外側だけ)
+      const side = Math.random() < 0.5 ? -1 : 1, a = side < 0 ? rand(Math.PI * 0.62, Math.PI * 0.97) : rand(Math.PI * 0.03, Math.PI * 0.38);
+      const r1 = rand(0.3, 0.8) * Math.max(W, H), r2 = r1 + rand(50, 150);
+      c.beginPath(); c.moveTo(cx + Math.cos(a) * r1, hy + Math.sin(a) * r1); c.lineTo(cx + Math.cos(a) * r2, hy + Math.sin(a) * r2); c.stroke();
+    }
+
+    /* ---- ブロックとトゲ (遠い順) ---- */
+    let last = head;
+    while (last < objs.length && distAt(objs[last].t) - d0 <= ZMAX) last++;
+    for (let i = last - 1; i >= head; i--) {
+      const o = objs[i]; if (o.done) continue;
+      const z = distAt(o.t) - d0, p = P(z), x = X(o.lane, p), y = Y(p), sz = LW * 0.6 * p, a = clamp((ZMAX - z) / 10, 0, 1);
+      c.globalAlpha = a;
+      if (o.spike) {
+        c.fillStyle = '#ff3b55'; c.shadowColor = '#ff3b55'; c.shadowBlur = p > 0.3 ? 16 : 0;
+        c.beginPath();
+        for (let s = -1; s <= 1; s++) { c.moveTo(x + s * sz * 0.36 - sz * 0.2, y); c.lineTo(x + s * sz * 0.36, y - sz * (s ? 0.75 : 1.05)); c.lineTo(x + s * sz * 0.36 + sz * 0.2, y); }
+        c.fill(); c.shadowBlur = 0;
+      } else {
+        const hue = o.big ? 45 : HUES[o.type], h = sz * (o.big ? 1.25 : 0.9), w = sz * (o.big ? 1.25 : 1);
+        const g = c.createLinearGradient(0, y - h, 0, y);
+        g.addColorStop(0, `hsl(${hue} 100% 80%)`); g.addColorStop(1, `hsl(${hue} 95% 48%)`);
+        c.fillStyle = g; c.shadowColor = `hsl(${hue} 100% 60%)`; c.shadowBlur = p > 0.25 ? 20 : 0;
+        c.beginPath(); c.roundRect ? c.roundRect(x - w / 2, y - h, w, h, w * 0.16) : c.rect(x - w / 2, y - h, w, h); c.fill(); c.shadowBlur = 0;
+        c.fillStyle = 'rgba(255,255,255,.4)'; c.fillRect(x - w / 2 + w * 0.12, y - h + h * 0.1, w * 0.76, h * 0.12);
+        if (o.big) { c.fillStyle = '#5a3200'; c.font = `800 ${Math.round(h * 0.6)}px ${RG.FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('★', x, y - h * 0.45); }
+      }
+    }
+    c.globalAlpha = 1;
+
+    /* ---- 機体 ---- */
+    const shipX = cx + px * LW, sy = py - 6 - RG.audio.bass * 6;
+    tiltNow += (clamp((px - lastPx) / Math.max(dt, 0.001) * 0.07, -0.32, 0.32) - tiltNow) * 0.3;
+    const tilt = tiltNow;
+    lastPx = px;
+    if (api.state !== 'pause') fx.add(shipX + rand(-8, 8) * S, sy + 14 * S, rand(-30, 30), rand(200, 420) * S,
+      { life: rand(0.15, 0.35), c: fever ? `hsl(${(pn * 0.7) % 360} 100% 65%)` : '#5ce1ff', s: 3, d: 0.95 });
+    fx.draw(c);
+    c.save(); c.translate(shipX, sy); c.rotate(tilt); c.scale(S, S);
+    c.shadowColor = fever ? `hsl(${(pn * 0.7) % 360} 100% 65%)` : '#5ce1ff'; c.shadowBlur = fever ? 34 : 18;
+    c.fillStyle = '#f4faff'; c.beginPath(); c.moveTo(0, -34); c.lineTo(26, 16); c.lineTo(0, 6); c.lineTo(-26, 16); c.closePath(); c.fill(); c.shadowBlur = 0;
+    c.fillStyle = '#ff6ad5'; c.beginPath(); c.moveTo(0, -14); c.lineTo(9, 8); c.lineTo(0, 3); c.lineTo(-9, 8); c.closePath(); c.fill();
+    c.restore();
+    fx.drawTexts(c);
+    c.restore();
+    fx.drawFlash(c, W, H);
+    if (playing) J.draw(c);
+  },
+});
+</script>
+</body>
+</html>

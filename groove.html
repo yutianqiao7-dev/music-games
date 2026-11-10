@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>グルーヴフロア - ビートに乗って踊れ</title>
+<link rel="stylesheet" href="common.css">
+</head>
+<body>
+<script src="common.js"></script>
+<script>
+'use strict';
+const { TAU, clamp, rand, lerp } = RG;
+const DIFF = {
+  easy:   { life: 4, beam: 0, every: 2 },     // life: 星が消えるまでの余裕(拍) / beam: 何拍ごとにビームが来るか
+  normal: { life: 3, beam: 8, every: 1 },
+  hard:   { life: 2, beam: 4, every: 1 },
+};
+const COLS = 7, ROWS = 5;
+const KIND = {
+  perfect: { label: 'ノリノリ!', color: '#ffe08a', w: 1 },
+  great:   { label: 'いいね',    color: '#9ff0c8', w: 0.7 },
+  good:    { label: 'ギリ',      color: '#9cc4ff', w: 0.4 },
+};
+const fx = new RG.Fx();
+let B = [], per = 0.5, win = 0.15, bpm = 120, used = null, ev = {}, openI = 0, closeI = 0;
+let stars = [], beams = [], pl = null, J = null, counts = {}, started = false, pulse = 0, hueBase = 200, judge = null, streak = 0;
+
+/* 検出した拍に、テンポ補正(半分/倍)と開始前のカウントを足す */
+function beatList(feat, tempo, lead) {
+  const info = RG.beats(feat); let b = info.beats.slice(), p = info.period;
+  if (tempo === 0) { b = b.filter((_, i) => i % 2 === 0); p *= 2; }
+  else if (tempo === 2) { const o = []; for (let i = 0; i < b.length; i++) { o.push(b[i]); o.push(i + 1 < b.length ? (b[i] + b[i + 1]) / 2 : b[i] + p / 2); } b = o; p /= 2; }
+  while (b[0] - p > -lead + 0.7) b.unshift(b[0] - p);
+  return { beats: b, period: p, bpm: 60 / p };
+}
+function geo(api) {
+  const { W, H, S } = api, ts = Math.min(W * 0.94 / COLS, H * 0.6 / ROWS, 118 * S);
+  return { ts, ox: (W - ts * COLS) / 2, oy: H * 0.15 + (H * 0.62 - ts * ROWS) / 2 };
+}
+const tileXY = (g, x, y) => [g.ox + (x + 0.5) * g.ts, g.oy + (y + 0.5) * g.ts];
+const inBeam = (b, x, y) => b.row ? y === b.i : x === b.i;
+
+function drum(k) {                          // 踏むたびに鳴る: ドン / パン を交互に
+  if (k % 2 === 0) RG.sfx.tone(150, 0.16, 0.5, 'sine', 45);
+  else { RG.sfx.noise(1800, 0.11, 0.38, 'bandpass', 0.8); RG.sfx.tone(190, 0.07, 0.15, 'triangle', 120); }
+}
+
+function collect(api, s, g) {
+  s.dead = true; counts.star++;
+  const [x, y] = tileXY(g, s.x, s.y), gain = J.add(s.big ? 3000 : 1000);
+  fx.burst(x, y, s.big ? 40 : 20, { colors: s.big ? ['#ffe08a', '#fff', '#ffb347'] : ['#fff7b0', '#fff', `hsl(${hueBase} 100% 75%)`], v0: 100, v1: s.big ? 700 : 440, g: 300 });
+  fx.text(x, y - g.ts * 0.5, '+' + gain.toLocaleString(), s.big ? '#ffe08a' : '#fff', gain >= 4000 ? 22 : 16);
+  streak++; RG.sfx.chime(streak, true);
+  if (s.big) { fx.flash = 0.25; fx.flashColor = '255,240,200'; fx.shake = 8; RG.sfx.cheer(0.35); }
+}
+
+// 一歩踏む。(dx, dy) = (0, 0) はその場でステップ
+function step(api, dx, dy, forceK) {
+  if (!J || api.state !== 'play') return;
+  const t = api.time(), g = geo(api), pn = performance.now(), [cx, cy] = tileXY(g, pl.x, pl.y);
+  let k = clamp(closeI, 0, B.length - 1);
+  for (const c of [closeI - 1, closeI + 1]) if (c >= 0 && c < B.length && Math.abs(B[c] - t) < Math.abs(B[k] - t)) k = c;
+  if (forceK !== undefined) k = forceK;                           // お手本は処理落ちしても拍ぴったり扱い
+  const d = forceK !== undefined ? 0 : t - B[k];
+  if (Math.abs(d) > win || used[k]) {                              // 拍から外れた
+    if (started) { counts.off++; J.miss(false); streak = 0; fx.text(cx, cy - g.ts * 0.7, 'ズレた!', '#ff8f8f', 17); RG.sfx.noise(260, 0.09, 0.25); fx.shake = Math.max(fx.shake, 4); pl.wob = pn; }
+    return;
+  }
+  used[k] = 1; started = true;
+  const a = Math.abs(d), kind = a <= 0.055 ? 'perfect' : a <= 0.105 ? 'great' : 'good', K = KIND[kind];
+  counts[kind]++;
+  J.hit(K.w, { base: 100, gauge: 0.011 + 0.013 * K.w });
+  const nx = clamp(pl.x + dx, 0, COLS - 1), ny = clamp(pl.y + dy, 0, ROWS - 1);
+  pl.fx = pl.x; pl.fy = pl.y; pl.x = nx; pl.y = ny; pl.t0 = pn; if (dx) pl.dir = dx;
+  drum(k);
+  const [tx, ty] = tileXY(g, nx, ny);
+  fx.text(tx, ty - g.ts * 0.72, K.label, K.color, kind === 'perfect' ? 19 : 15);
+  fx.burst(tx, ty + g.ts * 0.2, kind === 'perfect' ? 10 : 5, { colors: [K.color, '#fff'], ang: -Math.PI / 2, spread: 2.8, v0: 60, v1: 260, g: 500, l1: 0.5 });
+  judge = { kind, t: pn };
+  const reach = J.feverOn ? 1 : 0;
+  for (const s of stars) if (!s.dead && Math.abs(s.x - nx) <= reach && Math.abs(s.y - ny) <= reach) collect(api, s, g);
+  stars = stars.filter(s => !s.dead);
+}
+
+function spawnStar(k, e) {
+  if (stars.length >= 4) return;
+  const D = DIFF[J.api.diff];
+  for (let tries = 0; tries < 30; tries++) {
+    const x = Math.floor(rand(0, COLS)), y = Math.floor(rand(0, ROWS)), d = Math.abs(x - pl.x) + Math.abs(y - pl.y);
+    if (d < 1 || d > (e.big ? 4 : 3) || stars.some(s => s.x === x && s.y === y)) continue;
+    stars.push({ x, y, big: e.big, born: k, expire: k + d + D.life, life: d + D.life });
+    counts.total++; return;
+  }
+}
+
+function autoMove(api, k) {                  // お手本: いちばん急ぎの星へ、ビームはよける
+  let tgt = null; for (const s of stars) if (!tgt || s.expire < tgt.expire) tgt = s;
+  const opts = [];
+  if (tgt) {
+    const dx = Math.sign(tgt.x - pl.x), dy = Math.sign(tgt.y - pl.y);
+    if (Math.abs(tgt.x - pl.x) >= Math.abs(tgt.y - pl.y)) { if (dx) opts.push([dx, 0]); if (dy) opts.push([0, dy]); } else { if (dy) opts.push([0, dy]); if (dx) opts.push([dx, 0]); }
+  }
+  opts.push([0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]);
+  const safe = m => { const x = clamp(pl.x + m[0], 0, COLS - 1), y = clamp(pl.y + m[1], 0, ROWS - 1); return !beams.some(b => b.fireK <= k + 1 && inBeam(b, x, y)); };
+  const m = opts.find(safe) || opts[0];
+  step(api, m[0], m[1], k);
+}
+
+function openBeat(api, k) {                  // 拍の瞬間
+  pulse = 1; if (k % 8 === 0) hueBase = (hueBase + 47) % 360;
+  if (B[k] < 0) return;
+  const D = DIFF[api.diff], env = RG.intensity(api.song.feat, B[k]);
+  if (ev[k]) spawnStar(k, ev[k]);
+  if (D.beam && k % D.beam === 0 && B[k] > 3 && env > 0.3 && k + 3 < B.length) {
+    const row = Math.random() < 0.5;
+    beams.push({ row, i: Math.random() < 0.6 ? (row ? pl.y : pl.x) : Math.floor(rand(0, row ? ROWS : COLS)), fireK: k + 2, born: performance.now() });
+    if (api.diff === 'hard' && env > 0.6) beams.push({ row: !row, i: Math.floor(rand(0, row ? COLS : ROWS)), fireK: k + 2, born: performance.now() });
+  }
+  for (const b of beams) if (b.fireK === k) { b.fired = performance.now(); RG.sfx.tone(900, 0.18, 0.12, 'sawtooth', 140); }
+}
+function closeBeat(api, k) {                 // その拍の受付が終わった瞬間
+  const g = geo(api), [cx, cy] = tileXY(g, pl.x, pl.y);
+  if (!used[k] && started && B[k] >= 0 && B[k] < api.duration) { counts.skip++; J.miss(); streak = 0; fx.text(cx, cy - g.ts * 0.7, 'ノリ切れ…', '#9da1bb', 15); }
+  for (const b of beams) {
+    if (b.fireK !== k) continue;
+    b.dead = true;
+    if (inBeam(b, pl.x, pl.y) && !J.feverOn) {
+      counts.zap++; J.miss(false); streak = 0; fx.shake = 14; fx.flash = 0.35; fx.flashColor = '255,60,80'; pl.wob = performance.now();
+      fx.burst(cx, cy, 26, { colors: ['#ff5d6c', '#fff'], v1: 480 }); fx.text(cx, cy - g.ts * 0.9, 'ビリビリ!', '#ff8f8f', 20); RG.sfx.noise(240, 0.35, 0.5);
+    } else if (inBeam(b, pl.fx, pl.fy) || Math.abs((b.row ? pl.y : pl.x) - b.i) === 1) { const gain = J.add(300); fx.text(cx, cy - g.ts * 0.9, 'よけた +' + gain, '#9cc4ff', 14); }
+  }
+  beams = beams.filter(b => !b.dead);
+  stars = stars.filter(s => s.expire > k);
+}
+
+function starPath(c, r) { c.beginPath(); for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * 0.45 : r; i ? c.lineTo(Math.cos(a) * rr, Math.sin(a) * rr) : c.moveTo(Math.cos(a) * rr, Math.sin(a) * rr); } c.closePath(); }
+
+RG.shell({
+  id: 'groove', title: 'グルーヴフロア', sub: 'GROOVE FLOOR', colors: ['#ffe08a', '#ff7ab8', '#7fe9ff'],
+  defaults: { tempo: 1 },
+  options: [{ key: 'tempo', label: 'テンポ補正', min: 0, max: 2, fmt: v => ['半分', '標準', '倍'][v] }],
+  lead: '<b>曲のビートに合わせて、一拍ごとに一歩。</b>踏むたびにドラムが鳴り、あなたの足が曲のリズム隊になります。ビートに乗り続けて、フロアに現れる星を集めよう。',
+  how: [['一、乗る', '足元の輪が縮みきる瞬間 = 拍。そこで <kbd>←↑↓→</kbd> か <kbd>WASD</kbd> を押して一歩'],
+        ['二、集める', '星が消える前に踏みに行く。その場で足踏みは <kbd>Space</kbd>'],
+        ['三、よける', '赤く光った列は2拍後にビームが走る。拍に合わせて外へ']],
+  hint: 'スマホは進みたい方向の床をタップ(キャラをタップで足踏み)。拍を逃さず踏み続けると得点が最大4倍。ゲージ満タンで<b style="color:var(--a1)">フィーバー</b>。拍がずれて感じたら「タイミング」を、速すぎ・遅すぎなら「テンポ補正」を調整してください。',
+  count: (f, d, api) => beatList(f, api.settings.tempo, 2.6).beats.filter(t => t >= 0).length,
+  countLabel: (n, api) => `${Math.round(beatList(api.song.feat, api.settings.tempo, 2.6).bpm)} BPM ・ ${n} 拍`,
+
+  start(api) {
+    const feat = api.song.feat, D = DIFF[api.diff], bl = beatList(feat, api.settings.tempo, api.lead);
+    B = bl.beats; per = bl.period; bpm = bl.bpm; win = Math.min(0.16, per * 0.3);
+    used = new Uint8Array(B.length); ev = {}; openI = 0; closeI = 0; stars = []; beams = []; started = false; pulse = 0; judge = null; streak = 0;
+    // 曲の音を、いちばん近い拍に結びつける → その拍で星が出る
+    let k = 0, lastK = -9;
+    for (const n of RG.onsets(feat, { mult: 1.45, gap: per * 0.9 })) {
+      while (k + 1 < B.length && Math.abs(B[k + 1] - n.t) < Math.abs(B[k] - n.t)) k++;
+      if (Math.abs(B[k] - n.t) < per * 0.3 && k - lastK >= D.every) { ev[k] = n; lastK = k; }
+    }
+    pl = { x: 3, y: 2, fx: 3, fy: 2, t0: -9999, dir: 1, wob: -9999 };
+    counts = { perfect: 0, great: 0, good: 0, off: 0, skip: 0, star: 0, total: 0, zap: 0 }; fx.clear();
+    J = new RG.Juice(api, { combo: 'ノリ', fever: 'フィーバー', feverDesc: '得点2倍・星を吸い寄せ・ビーム無効', lead: api.auto ? 'お手本プレイ' : 'ビートに合わせて一歩ずつ。まずは Space で足踏みから',
+      sub: () => `★ ${counts.star}  ・  ${Math.round(bpm)} BPM${api.auto ? ' ・ お手本' : ''}`,
+      onFever() { fx.flash = 0.5; fx.flashColor = '255,255,255'; fx.shake = 10; } });
+  },
+  quit() { J = null; B = []; fx.clear(); },
+  end(api) {
+    const steps = counts.perfect + counts.great + counts.good;
+    api.finish({ score: J.score, pct: J.pct() - counts.off * 0.5 - counts.zap * 2, names: ['ダンスキング', 'グルーヴマスター', 'ダンサー', 'ビギナー', 'リズム練習中'],
+      title: counts.skip === 0 && counts.off === 0 && steps > 0 ? '完全にノッてた' : '',
+      stats: [['ノリノリ', counts.perfect, '#ffe08a'], ['いいね', counts.great, '#9ff0c8'], ['ギリ', counts.good, '#9cc4ff'], ['ズレ・抜け', counts.off + counts.skip, '#b0b4cc'],
+        ['集めた星', `${counts.star} / ${counts.total}`], ['最大ノリ', J.maxCombo], ['ビーム被弾', counts.zap], ['フィーバー', J.fevers + ' 回']] });
+  },
+  key(api, code, down) {
+    if (!down || api.auto) return;
+    const m = { ArrowLeft: [-1, 0], KeyA: [-1, 0], ArrowRight: [1, 0], KeyD: [1, 0], ArrowUp: [0, -1], KeyW: [0, -1], ArrowDown: [0, 1], KeyS: [0, 1], Space: [0, 0] }[code];
+    if (m) step(api, m[0], m[1]);
+  },
+  pointer(api, type) {
+    if (type !== 'down' || api.state !== 'play' || api.auto) return;
+    const g = geo(api), [cx, cy] = tileXY(g, pl.x, pl.y), dx = api.pointer.x - cx, dy = api.pointer.y - cy;
+    if (Math.hypot(dx, dy) < g.ts * 0.55) step(api, 0, 0);
+    else if (Math.abs(dx) > Math.abs(dy)) step(api, Math.sign(dx), 0); else step(api, 0, Math.sign(dy));
+  },
+
+  frame(api, dt) {
+    const { c, W, H, S } = api, pn = performance.now(), playing = !!J && api.state !== 'title', g = geo(api);
+    const t = playing ? api.time() : pn / 1000, fever = playing && J.feverOn;
+
+    if (api.state === 'play') {
+      J.update();
+      while (openI < B.length && t >= B[openI]) { openBeat(api, openI); if (api.auto) autoMove(api, openI); openI++; }
+      while (closeI < B.length && t >= B[closeI] + win) closeBeat(api, closeI++);
+    } else if (!playing) { const ph = (t % 0.5) / 0.5; if (ph < 0.06 && pulse < 0.5) { pulse = 1; hueBase = (hueBase + 9) % 360; } }
+    fx.step(dt);
+    pulse *= Math.pow(0.86, dt * 60);
+    const bi = playing ? openI : Math.floor(t / 0.5);
+
+    /* ---- 背景: クラブの照明 ---- */
+    const bg = c.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#07041a'); bg.addColorStop(1, '#120a2c');
+    c.fillStyle = bg; c.fillRect(0, 0, W, H);
+    c.save(); c.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 5; i++) {
+      const x0 = W * (0.1 + 0.2 * i), a = Math.sin(pn / 1400 + i * 1.7) * 0.5, hue = (hueBase + i * 55 + (fever ? pn * 0.2 : 0)) % 360;
+      const lg = c.createLinearGradient(x0, 0, x0 + Math.sin(a) * H, H * 0.9);
+      lg.addColorStop(0, `hsla(${hue},100%,65%,${0.16 + pulse * 0.16 + RG.audio.bass * 0.12})`); lg.addColorStop(1, `hsla(${hue},100%,60%,0)`);
+      c.fillStyle = lg; c.beginPath(); c.moveTo(x0 - 8, 0); c.lineTo(x0 + 8, 0);
+      c.lineTo(x0 + Math.sin(a) * H + 130 * S, H * 0.9); c.lineTo(x0 + Math.sin(a) * H - 130 * S, H * 0.9); c.closePath(); c.fill();
+    }
+    c.restore();
+
+    c.save();
+    c.translate((Math.random() - 0.5) * fx.shake, (Math.random() - 0.5) * fx.shake);
+
+    /* ---- フロア ---- */
+    const gap = Math.max(2, g.ts * 0.045), rr = g.ts * 0.12;
+    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+      const alt = (x + y + bi) % 2, hue = fever ? (hueBase + (x + y) * 28 + pn * 0.15) % 360 : (hueBase + (alt ? 0 : 150)) % 360;
+      const l = (alt ? 30 : 16) + pulse * (alt ? 26 : 8) + (fever ? 10 : 0), X = g.ox + x * g.ts + gap, Y = g.oy + y * g.ts + gap, w = g.ts - gap * 2;
+      c.fillStyle = `hsl(${hue} ${alt ? 85 : 60}% ${l}%)`;
+      if (alt && pulse > 0.3) { c.shadowColor = c.fillStyle; c.shadowBlur = 18 * pulse; }
+      c.beginPath(); c.roundRect ? c.roundRect(X, Y, w, w, rr) : c.rect(X, Y, w, w); c.fill(); c.shadowBlur = 0;
+      c.fillStyle = 'rgba(255,255,255,.07)'; c.beginPath(); c.roundRect ? c.roundRect(X, Y, w, w * 0.45, rr) : c.rect(X, Y, w, w * 0.45); c.fill();
+    }
+    // ビームの予告と発射
+    for (const b of beams) {
+      const fired = b.fired ? clamp(1 - (pn - b.fired) / 260, 0, 1) : 0, left = playing ? clamp((B[b.fireK] - t) / (per * 2), 0, 1) : 1;
+      const X = b.row ? g.ox : g.ox + b.i * g.ts, Y = b.row ? g.oy + b.i * g.ts : g.oy, w = b.row ? g.ts * COLS : g.ts, h = b.row ? g.ts : g.ts * ROWS;
+      if (b.fired) { c.fillStyle = `rgba(255,${120 + fired * 135 | 0},${140 + fired * 115 | 0},${0.35 + fired * 0.6})`; c.shadowColor = '#ff3b55'; c.shadowBlur = 40 * fired; c.fillRect(X, Y, w, h); c.shadowBlur = 0; }
+      else {
+        const blink = 0.5 + 0.5 * Math.sin(pn / (60 + left * 120));
+        c.fillStyle = `rgba(255,50,80,${0.16 + (1 - left) * 0.3 * blink})`; c.fillRect(X + gap, Y + gap, w - gap * 2, h - gap * 2);
+        c.strokeStyle = `rgba(255,90,110,${0.5 + 0.5 * blink})`; c.lineWidth = 3; c.strokeRect(X + gap, Y + gap, w - gap * 2, h - gap * 2);
+        c.fillStyle = '#fff'; c.font = `800 ${Math.round(g.ts * 0.32)}px ${RG.FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+        const n = Math.max(1, Math.ceil(left * 2));
+        for (let i = 0; i < (b.row ? COLS : ROWS); i += 2) { const [tx, ty] = tileXY(g, b.row ? i : b.i, b.row ? b.i : i); c.globalAlpha = 0.75; c.fillText(n, tx, ty); c.globalAlpha = 1; }
+      }
+    }
+    // 星
+    for (const s of stars) {
+      const [x, y] = tileXY(g, s.x, s.y), left = playing ? clamp((B[Math.min(B.length - 1, s.expire)] + win - t) / (per * s.life), 0, 1) : 1;
+      const hurry = left * s.life < 1.2, bob = Math.sin(pn / 220 + s.x) * 3, r = g.ts * (s.big ? 0.36 : 0.27) * (1 + pulse * 0.18);
+      c.strokeStyle = hurry ? `rgba(255,120,120,${0.6 + 0.4 * Math.sin(pn / 50)})` : 'rgba(255,255,255,.75)'; c.lineWidth = 3; c.lineCap = 'round';
+      c.beginPath(); c.arc(x, y, g.ts * 0.42, -Math.PI / 2, -Math.PI / 2 + TAU * left); c.stroke();          // 消えるまでの残り
+      c.save(); c.translate(x, y + bob - 4); c.rotate(Math.sin(pn / 400 + s.y) * 0.2);
+      c.fillStyle = s.big ? '#ffc23d' : '#fff3a0'; c.shadowColor = s.big ? '#ffb347' : '#fff3a0'; c.shadowBlur = 22; starPath(c, r); c.fill(); c.shadowBlur = 0;
+      c.fillStyle = 'rgba(255,255,255,.7)'; starPath(c, r * 0.42); c.fill();
+      c.restore();
+    }
+
+    /* ---- キャラクター ---- */
+    if (playing || true) {
+      const P = pl || { x: 3, y: 2, fx: 3, fy: 2, t0: -9999, dir: 1, wob: -9999 };
+      const p = clamp((pn - P.t0) / 115, 0, 1), e = 1 - (1 - p) * (1 - p);
+      const [ax, ay] = tileXY(g, P.fx, P.fy), [bx, by] = tileXY(g, P.x, P.y);
+      const x = lerp(ax, bx, e) + (pn - P.wob < 300 ? Math.sin(pn / 18) * 6 : 0), hop = Math.sin(p * Math.PI) * g.ts * 0.42, y = lerp(ay, by, e);
+      const land = clamp(1 - (pn - P.t0 - 115) / 140, 0, 1) * (p >= 1 ? 1 : 0), sq = 1 - land * 0.28 + pulse * 0.07, r = g.ts * 0.3;
+      const col = fever ? `hsl(${(pn * 0.7) % 360} 100% 66%)` : ['#f4f6ff', '#9ff0c8', '#ffd98a', '#ff8fb0'][(J ? J.mult : 1) - 1];
+      if (playing && api.state === 'play') {                      // 拍を示す輪: 縮みきった瞬間に踏む
+        let nk = closeI; while (nk < B.length && used[nk]) nk++;
+        if (nk < B.length) {
+          const fr = clamp((B[nk] - t) / per, 0, 1);
+          c.strokeStyle = `rgba(255,255,255,${0.25 + 0.6 * (1 - fr)})`; c.lineWidth = 2.5 + (1 - fr) * 2;
+          c.beginPath(); c.arc(bx, by, r * 1.25 + g.ts * 0.75 * fr, 0, TAU); c.stroke();
+          c.strokeStyle = 'rgba(255,255,255,.35)'; c.lineWidth = 1.5; c.beginPath(); c.arc(bx, by, r * 1.25, 0, TAU); c.stroke();
+        }
+      }
+      c.fillStyle = 'rgba(0,0,0,.35)'; c.beginPath(); c.ellipse(x, y + r * 0.95, r * (0.9 - hop / g.ts * 0.6), r * 0.3, 0, 0, TAU); c.fill();
+      c.save(); c.translate(x, y - hop + r * (1 - sq) * 0.9); c.scale(1 + (1 - sq) * 0.8, sq);
+      c.shadowColor = col; c.shadowBlur = fever ? 34 : 18; c.fillStyle = col; c.beginPath(); c.arc(0, 0, r, 0, TAU); c.fill(); c.shadowBlur = 0;
+      c.fillStyle = 'rgba(255,255,255,.45)'; c.beginPath(); c.ellipse(-r * 0.3, -r * 0.42, r * 0.34, r * 0.2, -0.5, 0, TAU); c.fill();
+      c.fillStyle = '#1a1030';                                    // 顔
+      const ex = P.dir * r * 0.16;
+      c.beginPath(); c.ellipse(ex - r * 0.28, -r * 0.05, r * 0.1, r * 0.16, 0, 0, TAU); c.ellipse(ex + r * 0.28, -r * 0.05, r * 0.1, r * 0.16, 0, 0, TAU); c.fill();
+      c.strokeStyle = '#1a1030'; c.lineWidth = 2.5; c.lineCap = 'round'; c.beginPath(); c.arc(ex, r * 0.2, r * 0.22, 0.15 * Math.PI, 0.85 * Math.PI); c.stroke();
+      c.restore();
+    }
+    fx.draw(c);
+    fx.drawTexts(c);
+    c.restore();
+
+    /* ---- 下のビートバー: 両側から来る印が中央で重なる瞬間が拍 ---- */
+    if (playing) {
+      const cx = W / 2, y = H - 62, sp = 78 * S, jc = judge && pn - judge.t < 220 ? KIND[judge.kind].color : '#fff';
+      c.lineCap = 'round';
+      for (let k = closeI; k < B.length && B[k] - t < per * 4.2; k++) {
+        if (used[k]) continue;
+        const d = (B[k] - t) / per * sp; if (d < -sp * 0.4) continue;
+        c.strokeStyle = `rgba(255,255,255,${clamp(1 - d / (sp * 4.2), 0.1, 1) * 0.85})`; c.lineWidth = 4;
+        for (const s of [-1, 1]) { c.beginPath(); c.moveTo(cx + s * d, y - 13); c.lineTo(cx + s * d, y + 13); c.stroke(); }
+      }
+      const r = (15 + pulse * 9) * S;
+      c.fillStyle = jc; c.shadowColor = jc; c.shadowBlur = 14 + pulse * 22;
+      c.beginPath(); c.moveTo(cx, y - r); c.lineTo(cx + r, y); c.lineTo(cx, y + r); c.lineTo(cx - r, y); c.closePath(); c.fill(); c.shadowBlur = 0;
+    }
+    fx.drawFlash(c, W, H);
+    if (playing) J.draw(c);
+  },
+});
+</script>
+</body>
+</html>

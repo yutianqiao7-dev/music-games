@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>マイ・ミュージックゲームズ</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: #04050f; color: #f1f0ff;
+    font-family: "Segoe UI", "Yu Gothic UI", "Hiragino Sans", Meiryo, sans-serif; }
+  body { background: radial-gradient(1200px 700px at 50% -10%, #241a55 0%, #0a0b22 45%, #04050f 100%) fixed; }
+  main { max-width: 1040px; margin: 0 auto; padding: 44px 20px 60px; }
+  h1 { margin: 0; font-size: 38px; font-weight: 800; font-style: italic; letter-spacing: .01em;
+    background: linear-gradient(100deg, #7fe9ff, #b08cff 45%, #ff7ab8 75%, #ffe08a);
+    -webkit-background-clip: text; background-clip: text; color: transparent; display: inline-block; padding-right: 8px; }
+  p.lead { color: #9fa4cf; margin: 10px 0 30px; line-height: 1.8; font-size: 15px; }
+  p.lead b { color: #f1f0ff; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  a.game { position: relative; display: block; text-decoration: none; color: inherit; border-radius: 20px; padding: 22px 22px 20px;
+    background: rgba(12, 14, 34, .8); border: 1px solid rgba(160,175,255,.16); overflow: hidden;
+    transition: transform .18s, border-color .18s, box-shadow .18s; }
+  a.game::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 4px; background: linear-gradient(90deg, var(--c1), var(--c2)); }
+  a.game::after { content: ""; position: absolute; right: -60px; top: -60px; width: 190px; height: 190px; border-radius: 50%;
+    background: radial-gradient(circle, var(--c1), transparent 68%); opacity: .16; transition: opacity .18s; }
+  a.game:hover { transform: translateY(-4px); border-color: var(--c1); box-shadow: 0 18px 50px rgba(0,0,0,.5); }
+  a.game:hover::after { opacity: .34; }
+  .verb { font-size: 44px; font-weight: 800; line-height: 1; color: var(--c1); }
+  .name { font-size: 20px; font-weight: 800; font-style: italic; margin-top: 10px; }
+  .desc { color: #9fa4cf; font-size: 13.5px; line-height: 1.7; margin-top: 8px; min-height: 4.9em; }
+  .tags { margin-top: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .tags span { font-size: 11px; padding: 3px 9px; border-radius: 99px; background: rgba(160,175,255,.12); color: #c9cdf0; }
+  .note { margin-top: 28px; color: #7f84ad; font-size: 12.5px; line-height: 1.8; }
+  .note a { color: #9fa4cf; }
+</style>
+</head>
+<body>
+<main>
+  <h1>マイ・ミュージックゲームズ</h1>
+  <p class="lead"><b>好きな曲をアップロードすると、その曲専用のステージが自動で作られます。</b><br>
+    遊び方の違うゲームから選んでください。一度選んだ曲は、ほかのゲームでもそのまま使えます。</p>
+  <div class="grid">
+    <a class="game" href="groove.html" style="--c1:#ffe08a;--c2:#ff7ab8">
+      <div class="verb">踊る</div><div class="name">グルーヴフロア</div>
+      <div class="desc">曲のテンポを読み取り、一拍ごとに一歩。踏むたびにドラムが鳴る。ビートに乗り続けて、光るフロアの星を集める。</div>
+      <div class="tags"><span>矢印キー / タップ</span><span>ノリノリ</span><span>新作</span></div></a>
+    <a class="game" href="slash.html" style="--c1:#7fe9ff;--c2:#ff7ab8">
+      <div class="verb">斬る</div><div class="name">ビートスラッシュ</div>
+      <div class="desc">音に合わせて飛び出すクリスタルを、なぞって斬る。頂点で斬れば会心、一振りでまとめて斬れば連斬り。</div>
+      <div class="tags"><span>マウス / スワイプ</span><span>爽快感</span></div></a>
+    <a class="game" href="surf.html" style="--c1:#ff6ad5;--c2:#5ce1ff">
+      <div class="verb">走る</div><div class="name">ネオンサーフ</div>
+      <div class="desc">曲が光の道になり、盛り上がるほど加速する。左右に操縦して音のブロックを拾い、トゲをかわす。</div>
+      <div class="tags"><span>マウス / ← →</span><span>スピード感</span></div></a>
+    <a class="game" href="runner.html" style="--c1:#7dffb0;--c2:#b08cff">
+      <div class="verb">跳ぶ</div><div class="name">リズムランナー</div>
+      <div class="desc">曲から道が生まれる横スクロール。光の印が足元に来た瞬間にジャンプとスライディングで駆け抜ける。</div>
+      <div class="tags"><span>Space / ↓</span><span>シンプル</span></div></a>
+    <a class="game" href="shooter.html" style="--c1:#5ce1ff;--c2:#ffe08a">
+      <div class="verb">撃つ</div><div class="name">ビートシューター</div>
+      <div class="desc">曲の音がそのまま弾になる。動いてよけて、ジェムを集めて武器を育て、サビの弾幕でボスを押し切る。</div>
+      <div class="tags"><span>マウス / 指</span><span>育成・弾幕</span></div></a>
+    <a class="game" href="hanabi.html" style="--c1:#ffd98a;--c2:#ff7ab8">
+      <div class="verb">咲かす</div><div class="name">音花火</div>
+      <div class="desc">あなたは花火師。音に合わせて花火玉を咲かせ、夜空を一枚の写真に仕上げる。鑑賞モードつき。</div>
+      <div class="tags"><span>クリック / タップ</span><span>美しさ</span></div></a>
+    <a class="game" href="classic.html" style="--c1:#9fa4cf;--c2:#5aa9ff">
+      <div class="verb">叩く</div><div class="name">クラシック4レーン</div>
+      <div class="desc">いちばん最初に作った、落ちてくるノーツを D F J K で叩くおなじみの形式。</div>
+      <div class="tags"><span>D F J K</span><span>定番</span></div></a>
+  </div>
+  <p class="note">曲はこの端末のブラウザの中だけで処理され、どこにも送信されません。mp3・wav・ogg・m4a・flac などに対応しています。<br>
+    どのゲームにも「お手本」(自動プレイ)があるので、まず眺めてから遊ぶこともできます。</p>
+</main>
+</body>
+</html>
