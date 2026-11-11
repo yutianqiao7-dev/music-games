@@ -140,8 +140,8 @@
       <div><b>三、仕上げる</b>ぴったりなほど大きく丸く咲き、最後に一枚の写真になる</div>
     </div>
     <div class="how" style="grid-template-columns:1fr 1fr;margin-top:8px">
-      <div><b>長押し</b>音が伸びるところに出る「長」の輪は、押したまま輪が一周するまで離さない。途中の音で小花火が弾け、最後に満開</div>
-      <div><b>フリック</b>強い音に出る矢印の輪は、押してすぐ矢印の向きへサッと払う。流星になって得点1.5倍</div>
+      <div><b>長押し</b>外側に太い帯のある輪は、押したまま帯がなくなるまで離さない。途中の音で小花火が弾け、最後に満開</div>
+      <div><b>フリック</b>矢印のある輪は、押してすぐ矢印の向きへサッと払う。流星になって得点1.5倍</div>
     </div>
     <div class="hint"><b style="color:var(--gold)">連発</b>すると得点が最大4倍に。<b style="color:var(--gold)">歓声ゲージ</b>が満タンになると「大祭」に突入し、
       得点2倍・輪に触れるだけで咲き乱れます。たまに出る<b style="color:var(--gold)">虹玉</b>は大当たり。<br>スマホは輪を直接タップ。<kbd>Esc</kbd> でポーズ。曲はこの端末の中だけで処理され、どこにも送信されません。
@@ -405,7 +405,7 @@ const DIFF = {
 // 花火らしい色の組み合わせ (色相)
 const PALETTES = [[45, 5], [355, 45], [130, 185], [215, 275], [325, 45], [185, 215], [25, 355], [275, 325], [150, 50], [200, 330]];
 
-function makeChart(feat, diffName, aspect = 2.2, travel = 1) {
+function makeChart(feat, diffName, aspect = 2.2, travel = 1, minD = 0) {
   const { flux, bands, frames, dt, env } = feat, P = DIFF[diffName];
   const ps = new Float64Array(frames + 1);
   for (let i = 0; i < frames; i++) ps[i + 1] = ps[i] + flux[i];
@@ -571,7 +571,7 @@ function makeChart(feat, diffName, aspect = 2.2, travel = 1) {
     if (gap > 1.6 || notes.length === 0) {
       u = clamp(0.5 + panB * 0.3 + (rng() - 0.5) * 0.5, 0.1, 0.9); v = targetV; dir = rng() < 0.5 ? -1 : 1;
     } else {
-      const d = Math.min(P.max, P.base + gap * P.per) * travel;
+      const d = Math.max(minD, Math.min(P.max, P.base + gap * P.per) * travel);     // 続く的が重ならない距離は必ずあける
       const sv = clamp(targetV - v, -d * aspect * 0.85, d * aspect * 0.85);
       const rem = Math.sqrt(Math.max(0, d * d - (sv / aspect) * (sv / aspect)));
       if (type !== prevType && rng() < 0.35) dir = -dir;
@@ -1252,7 +1252,8 @@ function startGame() {
   if (G.W !== (window.innerWidth || 800) || G.H !== (window.innerHeight || 600)) resize();
   const ctx = ensureCtx();
   ctx.resume();
-  const notes = makeChart(song.feat, settings.diff, G.skyW / G.skyH, COARSE ? (G.skyW > G.skyH * 1.2 ? 0.7 : 1.5) : 1).map(n => Object.assign({ done: false }, n));
+  const notes = makeChart(song.feat, settings.diff, G.skyW / G.skyH, COARSE && G.skyW > G.skyH * 1.2 ? 0.7 : 1,
+    2.2 * G.hitR * DIFF[settings.diff].hit * 0.62 / G.skyW).map(n => Object.assign({ done: false }, n));
   const src = ctx.createBufferSource();
   src.buffer = song.buffer;
   src.connect(analyser);
@@ -1629,94 +1630,109 @@ const GOTHIC = '"Segoe UI", "Yu Gothic UI", "Hiragino Sans", Meiryo, sans-serif'
 let lastTs = 0, bass = 0;
 
 function drawTargets(now) {
-  const g = game, c = uic;
-  let last = g.head;
-  while (last < g.notes.length && g.notes[last].t - now <= g.rise) last++;
-  // 次の花火への道しるべ
-  c.lineWidth = 1.5; c.setLineDash([3, 7]);
-  let prev = null;
-  for (let i = g.head; i < last; i++) {
+  const g = game, c = uic, pn = performance.now();
+  const vis = [];
+  for (let i = g.head; i < g.notes.length; i++) {
     const n = g.notes[i];
-    if (n.done) continue;
-    if (prev && n.t - prev.t < 1.6) {
-      const dx = n.x - prev.x, dy = n.y - prev.y, d = Math.hypot(dx, dy);
-      if (d > prev.r * 0.62 + n.r * 0.62 + 6) {
-        const a = Math.min(1, (1 - (n.t - now) / g.rise) * 3) * 0.3;
-        c.strokeStyle = `rgba(255,255,255,${a})`;
-        c.beginPath();
-        c.moveTo(prev.x + dx / d * prev.r * 0.66, prev.y + dy / d * prev.r * 0.66);
-        c.lineTo(n.x - dx / d * n.r * 0.66, n.y - dy / d * n.r * 0.66);
-        c.stroke();
-      }
-    }
-    prev = n;
+    if (n.t - now > g.rise) break;
+    if (!n.done) vis.push(n);
+  }
+  const FULL = 3, DIM = [1, 0.8, 0.5];          // はっきり見せるのは直近の3つまで。その先は小さな点で予告するだけ
+  // 次の的への道しるべ
+  c.lineWidth = 1.5; c.setLineDash([3, 7]);
+  for (let k = 1; k < Math.min(vis.length, FULL); k++) {
+    const prev = vis[k - 1], n = vis[k];
+    if (n.t - prev.t >= 1.6) continue;
+    const dx = n.x - prev.x, dy = n.y - prev.y, d = Math.hypot(dx, dy);
+    if (d <= prev.r * 0.62 + n.r * 0.62 + 6) continue;
+    c.strokeStyle = `rgba(255,255,255,${0.32 / k})`;
+    c.beginPath();
+    c.moveTo(prev.x + dx / d * prev.r * 0.7, prev.y + dy / d * prev.r * 0.7);
+    c.lineTo(n.x - dx / d * n.r * 0.7, n.y - dy / d * n.r * 0.7);
+    c.stroke();
   }
   c.setLineDash([]);
-  for (let i = last - 1; i >= g.head; i--) {
-    const n = g.notes[i];
-    if (n.done) continue;
-    const p = 1 - (n.t - now) / g.rise, a = Math.min(1, p * 3.5), r0 = n.r * 0.62;
-    const col = n.rainbow ? (performance.now() * 0.45 + i * 50) % 360 : n.big ? 44 : n.type === 0 ? 44 : n.hue;
-    if (n.rainbow) {
-      c.strokeStyle = `hsla(${(col + 150) % 360},100%,75%,${0.7 * a})`; c.lineWidth = 2;
-      c.beginPath(); c.arc(n.x, n.y, r0 * 1.18, 0, TAU); c.stroke();
-      c.fillStyle = `hsla(${col},100%,85%,${0.9 * a})`; c.font = `600 ${Math.round(r0 * 0.5)}px ${MINCHO}`;
-      c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('虹', n.x, n.y + 1);
+  for (let k = vis.length - 1; k >= 0; k--) {
+    const n = vis[k], p = 1 - (n.t - now) / g.rise, r0 = n.r * 0.62;
+    const col = n.big || n.hold || n.type === 0 ? 44 : n.hue;
+    if (k >= FULL) {              // 予告: 小さな点
+      c.strokeStyle = `hsla(${col},100%,80%,${0.4 * Math.min(1, p * 3.5)})`; c.lineWidth = 1.5;
+      c.beginPath(); c.arc(n.x, n.y, r0 * 0.28, 0, TAU); c.stroke();
+      continue;
     }
-    // 的 (花火が重なっても見失わないよう、暗い下地を敷く)
-    c.fillStyle = `rgba(4,5,18,${0.5 * a})`; c.beginPath(); c.arc(n.x, n.y, r0 + 3, 0, TAU); c.fill();
+    const a = n.pending ? 1 : Math.min(1, p * 3.5) * DIM[k];
+    // 暗い下地 (花火が重なっても見失わない)
+    c.fillStyle = `rgba(4,5,18,${0.62 * a})`; c.beginPath(); c.arc(n.x, n.y, r0 * (n.hold ? 1.44 : 1) + 4, 0, TAU); c.fill();
+    if (n.hold) {                 // 長押し: 外側の太い帯 (押している間に減っていく) と、押し込む芯
+      c.strokeStyle = `hsla(44,100%,70%,${0.6 * a})`; c.lineWidth = r0 * 0.24;
+      c.beginPath(); c.arc(n.x, n.y, r0 * 1.28, 0, TAU); c.stroke();
+    }
     const gr = c.createRadialGradient(n.x, n.y, 0, n.x, n.y, r0);
-    gr.addColorStop(0, `hsla(${col},100%,70%,${0.05 * a})`); gr.addColorStop(1, `hsla(${col},100%,70%,${0.2 * a})`);
+    gr.addColorStop(0, `hsla(${col},100%,70%,${0.05 * a})`); gr.addColorStop(1, `hsla(${col},100%,70%,${0.22 * a})`);
     c.fillStyle = gr; c.beginPath(); c.arc(n.x, n.y, r0, 0, TAU); c.fill();
-    c.strokeStyle = `hsla(${col},100%,76%,${0.95 * a})`; c.lineWidth = n.big ? 3 : 2;
-    c.beginPath(); c.arc(n.x, n.y, r0, 0, TAU); c.stroke();
-    if (n.big) {
-      c.strokeStyle = `hsla(44,100%,76%,${0.5 * a})`; c.lineWidth = 1.5;
-      c.beginPath(); c.arc(n.x, n.y, r0 * 0.72, 0, TAU); c.stroke();
-      c.fillStyle = `hsla(44,100%,82%,${0.85 * a})`; c.font = `600 ${Math.round(r0 * 0.5)}px ${MINCHO}`;
-      c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('尺', n.x, n.y + 1);
+    if (n.rainbow) {              // 虹玉: 七色に回る輪と、まわりを巡る光の粒
+      c.lineWidth = 4.5;
+      for (let q = 0; q < 12; q++) {
+        c.strokeStyle = `hsla(${(pn * 0.3 + q * 30) % 360},100%,68%,${a})`;
+        c.beginPath(); c.arc(n.x, n.y, r0, q * TAU / 12, (q + 1) * TAU / 12 + 0.03); c.stroke();
+      }
+      for (let q = 0; q < 3; q++) {
+        const an = pn / 300 + q * TAU / 3;
+        c.fillStyle = `hsla(${(pn * 0.3 + q * 120) % 360},100%,85%,${a})`;
+        c.beginPath(); c.arc(n.x + Math.cos(an) * r0 * 1.28, n.y + Math.sin(an) * r0 * 1.28, 2.6, 0, TAU); c.fill();
+      }
+    } else {
+      c.strokeStyle = `hsla(${col},100%,76%,${0.95 * a})`; c.lineWidth = n.big ? 3.5 : 2.5;
+      c.beginPath(); c.arc(n.x, n.y, r0, 0, TAU); c.stroke();
     }
-    if (n.hold) {                 // 長押し: 二重の輪と「長」
-      c.strokeStyle = `hsla(44,100%,76%,${0.75 * a})`; c.lineWidth = 4; c.setLineDash([10, 7]);
-      c.beginPath(); c.arc(n.x, n.y, r0 * 1.24, 0, TAU); c.stroke(); c.setLineDash([]);
-      c.fillStyle = `hsla(44,100%,84%,${0.9 * a})`; c.font = `600 ${Math.round(r0 * 0.5)}px ${MINCHO}`;
-      c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('長', n.x, n.y + 1);
+    if (n.big) {                  // 尺玉: 二重の金の輪と、ゆっくり回る光条
+      c.strokeStyle = `hsla(44,100%,76%,${0.55 * a})`; c.lineWidth = 1.5;
+      c.beginPath(); c.arc(n.x, n.y, r0 * 0.7, 0, TAU); c.stroke();
+      c.strokeStyle = `hsla(44,100%,80%,${0.9 * a})`; c.lineWidth = 2.5; c.lineCap = 'round';
+      c.beginPath();
+      for (let q = 0; q < 8; q++) {
+        const an = pn / 1400 + q * TAU / 8, ca = Math.cos(an), sa = Math.sin(an);
+        c.moveTo(n.x + ca * r0 * 1.14, n.y + sa * r0 * 1.14); c.lineTo(n.x + ca * r0 * 1.36, n.y + sa * r0 * 1.36);
+      }
+      c.stroke(); c.lineCap = 'butt';
+    }
+    if (n.hold) {
+      c.fillStyle = `hsla(44,100%,80%,${0.9 * a})`;
+      c.beginPath(); c.arc(n.x, n.y, r0 * 0.4, 0, TAU); c.fill();
     }
     if (n.flick) {                // フリック: 払う向きの矢印
-      const ca = Math.cos(n.fa), sa = Math.sin(n.fa), al = n.pending ? 1 : a;
-      const chev = (d, s, alpha, w) => {
+      const ca = Math.cos(n.fa), sa = Math.sin(n.fa), al = a;
+      const chev = (d, sz, alpha, w) => {
         const tx = n.x + ca * d, ty = n.y + sa * d;
         c.strokeStyle = `rgba(255,255,255,${alpha})`; c.lineWidth = w; c.lineCap = 'round'; c.lineJoin = 'round';
         c.beginPath();
-        c.moveTo(tx - ca * s - sa * s, ty - sa * s + ca * s); c.lineTo(tx, ty); c.lineTo(tx - ca * s + sa * s, ty - sa * s - ca * s);
+        c.moveTo(tx - ca * sz - sa * sz, ty - sa * sz + ca * sz); c.lineTo(tx, ty); c.lineTo(tx - ca * sz + sa * sz, ty - sa * sz - ca * sz);
         c.stroke();
       };
-      c.strokeStyle = `rgba(255,255,255,${0.9 * al})`; c.lineWidth = 3; c.lineCap = 'round';
-      c.beginPath(); c.moveTo(n.x - ca * r0 * 0.4, n.y - sa * r0 * 0.4); c.lineTo(n.x + ca * r0 * 0.45, n.y + sa * r0 * 0.45); c.stroke();
-      chev(r0 * 0.47, r0 * 0.3, 0.95 * al, 3);
-      const ph = (performance.now() / 420) % 1;                     // 外へ流れる矢印
-      for (let k = 0; k < 2; k++) { const q = (ph + k * 0.5) % 1; chev(r0 * (1.25 + q * 0.75), r0 * 0.26, (1 - q) * 0.8 * al, 2.5); }
+      c.strokeStyle = `rgba(255,255,255,${0.95 * al})`; c.lineWidth = 3.5; c.lineCap = 'round';
+      c.beginPath(); c.moveTo(n.x - ca * r0 * 0.42, n.y - sa * r0 * 0.42); c.lineTo(n.x + ca * r0 * 0.45, n.y + sa * r0 * 0.45); c.stroke();
+      chev(r0 * 0.47, r0 * 0.32, 0.95 * al, 3.5);
+      const ph = (pn / 420) % 1;                                    // 外へ流れる矢印
+      for (let q = 0; q < 2; q++) { const z = (ph + q * 0.5) % 1; chev(r0 * (1.25 + z * 0.7), r0 * 0.26, (1 - z) * 0.8 * al, 2.5); }
       c.lineCap = 'butt'; c.lineJoin = 'miter';
     }
     // 縮んでくる輪: 的と重なった瞬間が「咲かせどき」
-    if (p < 1 && !n.pending) {
-      const rr = r0 * (1 + 2.4 * (1 - p));
-      c.strokeStyle = `rgba(255,255,255,${0.2 + 0.75 * a * p})`; c.lineWidth = 2.2;
+    if (p < 1 && !n.pending && k < 2) {          // 輪を出すのは次とその次だけ (重なって見えにくくならないように)
+      const rr = r0 * (1 + 1.5 * (1 - p));
+      c.strokeStyle = `rgba(255,255,255,${(0.25 + 0.7 * p) * a})`; c.lineWidth = 2.5;
       c.beginPath(); c.arc(n.x, n.y, rr, 0, TAU); c.stroke();
     }
   }
-  if (g.hold) {                   // 長押し中: 残り時間の輪
+  if (g.hold) {                   // 長押し中: 外側の帯が残り時間ぶんだけ残り、芯が脈打つ
     const n = g.hold.n, r0 = n.r * 0.62, left = clamp((n.hold - now) / (n.hold - n.t), 0, 1), weak = g.hold.lost !== null;
-    const beat = 1 + 0.06 * Math.sin(performance.now() / 60);
-    c.fillStyle = 'rgba(4,5,18,.45)'; c.beginPath(); c.arc(n.x, n.y, r0 + 3, 0, TAU); c.fill();
-    c.strokeStyle = weak ? 'rgba(255,120,120,.9)' : 'hsla(44,100%,80%,.95)'; c.lineWidth = 3;
-    c.beginPath(); c.arc(n.x, n.y, r0 * beat, 0, TAU); c.stroke();
-    c.strokeStyle = 'rgba(255,255,255,.18)'; c.lineWidth = 6;
-    c.beginPath(); c.arc(n.x, n.y, r0 * 1.3, 0, TAU); c.stroke();
-    c.strokeStyle = weak ? 'rgba(255,120,120,.95)' : 'hsla(44,100%,72%,.98)'; c.lineCap = 'round';
-    c.beginPath(); c.arc(n.x, n.y, r0 * 1.3, -Math.PI / 2, -Math.PI / 2 + TAU * left); c.stroke(); c.lineCap = 'butt';
-    c.fillStyle = 'rgba(255,240,200,.95)'; c.font = `600 ${Math.round(r0 * 0.42)}px ${MINCHO}`;
-    c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(weak ? '押して!' : 'そのまま', n.x, n.y + 1);
+    const beat = 1 + 0.1 * Math.sin(pn / 55), hot = weak ? 'rgba(255,110,110,.95)' : 'hsla(44,100%,74%,.98)';
+    c.fillStyle = 'rgba(4,5,18,.5)'; c.beginPath(); c.arc(n.x, n.y, r0 * 1.44 + 4, 0, TAU); c.fill();
+    c.strokeStyle = 'rgba(255,255,255,.16)'; c.lineWidth = r0 * 0.24;
+    c.beginPath(); c.arc(n.x, n.y, r0 * 1.28, 0, TAU); c.stroke();
+    c.strokeStyle = hot; c.lineCap = 'round';
+    c.beginPath(); c.arc(n.x, n.y, r0 * 1.28, -Math.PI / 2, -Math.PI / 2 + TAU * left); c.stroke(); c.lineCap = 'butt';
+    c.lineWidth = 3; c.beginPath(); c.arc(n.x, n.y, r0, 0, TAU); c.stroke();
+    c.fillStyle = hot; c.beginPath(); c.arc(n.x, n.y, r0 * 0.4 * (weak ? 0.7 : beat), 0, TAU); c.fill();
   }
 }
 
@@ -1741,7 +1757,7 @@ function drawHUD(now, pnow) {
   c.shadowBlur = 0;
   c.font = `13px ${GOTHIC}`; c.fillStyle = '#9fa4cf';
   const acc = g.judged ? (g.accSum / g.judged * 100).toFixed(1) + '%' : '--';
-  c.fillText(`精度 ${acc}${g.auto ? '  ・ 鑑賞モード' : ''}`, 18, 64);
+  c.fillText(acc, 18, 64);
   // 連発 (次の倍率までの進み具合つき)
   if (g.combo >= 2) {
     const cp = punch(g.comboPunch, 140);
@@ -1749,8 +1765,6 @@ function drawHUD(now, pnow) {
     c.fillStyle = MULT_COLOR[g.mult - 1] === '#9fa4cf' ? 'rgba(255,224,138,.95)' : MULT_COLOR[g.mult - 1];
     c.font = `700 ${Math.round(40 + cp * 14)}px ${MINCHO}`;
     c.fillText(g.combo, W / 2, 52);
-    c.fillStyle = '#9fa4cf'; c.font = `12px ${GOTHIC}`;
-    c.fillText('連 発', W / 2, 70);
     if (g.mult < 4) {
       const a = MULT_AT[g.mult - 1], b = MULT_AT[g.mult];
       c.fillStyle = 'rgba(160,175,255,.18)'; c.fillRect(W / 2 - 40, 77, 80, 3);
@@ -1767,9 +1781,6 @@ function drawHUD(now, pnow) {
     c.fillStyle = gg;
     if (g.feverOn || v > 0.8) { c.shadowColor = '#ffb070'; c.shadowBlur = 14; }
     c.fillRect(gx, gy, gw * v, 8); c.shadowBlur = 0;
-    c.textAlign = 'center'; c.font = `600 13px ${MINCHO}`;
-    c.fillStyle = g.feverOn ? '#ffe9b8' : '#9fa4cf';
-    c.fillText(g.feverOn ? '大祭 ― 得点2倍・触れるだけで咲く' : '歓 声', W / 2, gy - 8);
   }
   // 命中の衝撃波
   for (let i = rings.length - 1; i >= 0; i--) {
@@ -1797,52 +1808,10 @@ function drawHUD(now, pnow) {
     c.textAlign = 'center'; c.globalAlpha = a;
     c.fillStyle = '#f1f0ff'; c.font = `600 ${Math.round(clamp(W / 26, 20, 34))}px ${MINCHO}`;
     c.fillText('♪ ' + song.name, W / 2, H * 0.36, W * 0.86);
-    c.fillStyle = '#9fa4cf'; c.font = `15px ${GOTHIC}`;
-    c.fillText(g.auto ? 'まもなく開演' : '輪が重なる瞬間に咲かせよう', W / 2, H * 0.36 + 34);
     c.globalAlpha = 1;
   }
-  // 判定文字
-  c.textAlign = 'center';
-  for (let i = texts.length - 1; i >= 0; i--) {
-    const t = texts[i], p = (pnow - t.t0) / 650;
-    if (p >= 1) { texts.splice(i, 1); continue; }
-    c.globalAlpha = 1 - p * p; c.fillStyle = t.color;
-    c.font = `700 ${Math.round(19 + (1 - Math.min(1, p * 6)) * 6)}px ${MINCHO}`;
-    c.shadowColor = 'rgba(0,0,0,.7)'; c.shadowBlur = 6;
-    c.fillText(t.text, t.x, t.y - 8 - p * 18);
-    if (t.sub) {                          // 入った得点
-      c.fillStyle = t.hot ? '#fff' : '#ffe9b8';
-      c.font = `700 ${t.hot ? 20 : 14}px ${GOTHIC}`;
-      c.fillText(t.sub, t.x, t.y - 30 - p * 34 - (t.hot ? 6 : 0));
-    }
-    c.shadowBlur = 0;
-  }
-  c.globalAlpha = 1;
-  // 中央の大きな文字 (倍率アップ・大祭・虹玉)
-  if (banner) {
-    const p = (pnow - banner.t0) / 1100;
-    if (p >= 1) banner = null;
-    else {
-      const sc = 1 + (1 - Math.min(1, p * 7)) * 0.9;
-      c.globalAlpha = Math.min(1, p * 12) * (1 - Math.pow(p, 3));
-      c.fillStyle = banner.color; c.font = `700 ${Math.round(clamp(W / 13, 34, 76) * banner.size * sc)}px ${MINCHO}`;
-      c.shadowColor = banner.color; c.shadowBlur = 30;
-      c.textBaseline = 'middle'; c.fillText(banner.text, W / 2, H * 0.42); c.textBaseline = 'alphabetic';
-      c.shadowBlur = 0; c.globalAlpha = 1;
-    }
-  }
-  // 掛け声
-  if (shout) {
-    const p = (pnow - shout.t0) / 1800;
-    if (p >= 1) shout = null;
-    else {
-      c.globalAlpha = Math.min(1, p * 8) * (1 - Math.pow(p, 3));
-      c.fillStyle = '#ffe9b8'; c.font = `700 ${Math.round(clamp(W / 16, 30, 62))}px ${MINCHO}`;
-      c.shadowColor = 'rgba(255,150,80,.8)'; c.shadowBlur = 24;
-      c.fillText(shout.text, W / 2, G.horizon + (H - G.horizon) * 0.55);
-      c.shadowBlur = 0; c.globalAlpha = 1;
-    }
-  }
+  // 判定・倍率・大祭は文字を出さず、輪の色と光・画面の色づきで伝える
+  texts.length = 0; banner = null; shout = null;
 }
 
 function drawCursor(now) {
