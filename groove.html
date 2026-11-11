@@ -26,8 +26,9 @@ const fx = new RG.Fx();
 let B = [], per = 0.5, win = 0.15, bpm = 120, used = null, ev = {}, openI = 0, closeI = 0;
 let stars = [], beams = [], pl = null, J = null, counts = {}, started = false, pulse = 0, hueBase = 200, judge = null, streak = 0;
 
-/* 検出した拍に、テンポ補正(半分/倍)と開始前のカウントを足す */
+/* 聴き取った拍に、開始前のカウントを足す (テンポの半分/倍はタイトル画面の拍パネルで切り替える) */
 function beatList(feat, tempo, lead) {
+  tempo = 1;
   const info = RG.beats(feat); let b = info.beats.slice(), p = info.period;
   if (tempo === 0) { b = b.filter((_, i) => i % 2 === 0); p *= 2; }
   else if (tempo === 2) { const o = []; for (let i = 0; i < b.length; i++) { o.push(b[i]); o.push(i + 1 < b.length ? (b[i] + b[i + 1]) / 2 : b[i] + p / 2); } b = o; p /= 2; }
@@ -138,23 +139,21 @@ function starPath(c, r) { c.beginPath(); for (let i = 0; i < 10; i++) { const a 
 
 RG.shell({
   id: 'groove', title: 'グルーヴフロア', sub: 'GROOVE FLOOR', colors: ['#ffe08a', '#ff7ab8', '#7fe9ff'],
-  defaults: { tempo: 1 },
-  options: [{ key: 'tempo', label: 'テンポ補正', min: 0, max: 2, fmt: v => ['半分', '標準', '倍'][v] }],
   lead: '<b>曲のビートに合わせて、一拍ごとに一歩。</b>踏むたびにドラムが鳴り、あなたの足が曲のリズム隊になります。ビートに乗り続けて、フロアに現れる星を集めよう。',
   how: [['一、乗る', '足元の輪が縮みきる瞬間 = 拍。そこで <kbd>←↑↓→</kbd> か <kbd>WASD</kbd> を押して一歩'],
         ['二、集める', '星が消える前に踏みに行く。その場で足踏みは <kbd>Space</kbd>'],
         ['三、よける', '赤く光った列は2拍後にビームが走る。拍に合わせて外へ']],
   hint: 'スマホは進みたい方向の床をタップ(キャラをタップで足踏み)。拍を逃さず踏み続けると得点が最大4倍。ゲージ満タンで<b style="color:var(--a1)">フィーバー</b>。拍がずれて感じたら「タイミング」を、速すぎ・遅すぎなら「テンポ補正」を調整してください。',
-  count: (f, d, api) => beatList(f, api.settings.tempo, 2.6).beats.filter(t => t >= 0).length,
-  countLabel: (n, api) => `${Math.round(beatList(api.song.feat, api.settings.tempo, 2.6).bpm)} BPM ・ ${n} 拍`,
+  count: (f, d, api) => beatList(f, 1, 2.6).beats.filter(t => t >= 0).length,
+  countLabel: (n, api) => `${Math.round(beatList(api.song.feat, 1, 2.6).bpm)} BPM ・ ${n} 拍`,
 
   start(api) {
-    const feat = api.song.feat, D = DIFF[api.diff], bl = beatList(feat, api.settings.tempo, api.lead);
+    const feat = api.song.feat, D = DIFF[api.diff], bl = beatList(feat, 1, api.lead);
     B = bl.beats; per = bl.period; bpm = bl.bpm; win = Math.min(0.16, per * 0.3);
     used = new Uint8Array(B.length); ev = {}; openI = 0; closeI = 0; stars = []; beams = []; started = false; pulse = 0; judge = null; streak = 0;
     // 曲の音を、いちばん近い拍に結びつける → その拍で星が出る
     let k = 0, lastK = -9;
-    for (const n of RG.onsets(feat, { mult: 1.45, gap: per * 0.9 })) {
+    for (const n of RG.onsets(feat, { mult: 1.45, gap: per * 0.9, fill: false })) {
       while (k + 1 < B.length && Math.abs(B[k + 1] - n.t) < Math.abs(B[k] - n.t)) k++;
       if (Math.abs(B[k] - n.t) < per * 0.3 && k - lastK >= D.every) { ev[k] = n; lastK = k; }
     }

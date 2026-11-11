@@ -28,26 +28,9 @@ const fx = new RG.Fx();
 let notes = [], head = 0, J = null, trail = [], halves = [], slashes = [], pops = [];
 let zoom = 0, counts = {}, L = { cols: 4, cell: 100, cx: 0, cy: 0, vx: 0, vy: 0 }, per = 0.5, beat0 = 0;
 
-/* ---- 譜面: 音の立ち上がり + 拍の穴埋め → 斬る時刻の並び ---- */
+/* ---- 譜面: その曲の拍に合わせた、斬る時刻の並び (拍の聴き取りと穴埋めは共通エンジン) ---- */
 function timeline(feat, diff) {
-  const D = DIFF[diff], B = RG.beats(feat);
-  const list = RG.onsets(feat, D).map(n => ({ t: n.t, type: n.type, big: n.big }));
-  if (list.length > 4) {
-    const ts = list.map(n => n.t);
-    const free = (t, w) => {
-      let lo = 0, hi = ts.length - 1;
-      while (lo < hi) { const m = (lo + hi) >> 1; if (ts[m] < t - w) lo = m + 1; else hi = m; }
-      return !(ts[lo] >= t - w && ts[lo] <= t + w);
-    };
-    const add = (t, thr) => { if (t > ts[0] && t < ts[ts.length - 1] && RG.intensity(feat, t) >= thr) list.push({ t, type: 3, big: false }); };
-    for (let k = 0; k < B.beats.length; k++) {
-      const b = B.beats[k], p = k + 1 < B.beats.length ? B.beats[k + 1] - b : B.period;
-      if (free(b, p * 0.3)) add(b, D.fb);
-      if (p / 2 >= 0.2 && free(b + p / 2, p * 0.22)) add(b + p / 2, D.fh);
-    }
-    list.sort((a, b) => a.t - b.t);
-  }
-  return list;
+  return RG.onsets(feat, DIFF[diff]).map(n => ({ t: n.t, type: n.type, big: n.big }));
 }
 /* ---- 斬る向きと位置: 振り下ろしたら次は振り上げる、と手が自然に往復する並びにする ---- */
 function build(api) {

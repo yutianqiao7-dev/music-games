@@ -3,73 +3,156 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#05060f">
 <title>マイ・ミュージックゲームズ</title>
 <style>
-  * { box-sizing: border-box; }
-  html, body { margin: 0; min-height: 100%; background: #04050f; color: #f1f0ff;
-    font-family: "Segoe UI", "Yu Gothic UI", "Hiragino Sans", Meiryo, sans-serif; }
-  body { background: radial-gradient(1200px 700px at 50% -10%, #241a55 0%, #0a0b22 45%, #04050f 100%) fixed; }
-  main { max-width: 1040px; margin: 0 auto; padding: 44px 20px 60px; }
-  h1 { margin: 0; font-size: 38px; font-weight: 800; font-style: italic; letter-spacing: .01em;
-    background: linear-gradient(100deg, #7fe9ff, #b08cff 45%, #ff7ab8 75%, #ffe08a);
-    -webkit-background-clip: text; background-clip: text; color: transparent; display: inline-block; padding-right: 8px; }
-  p.lead { color: #9fa4cf; margin: 10px 0 30px; line-height: 1.8; font-size: 15px; }
-  p.lead b { color: #f1f0ff; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
-  a.game { position: relative; display: block; text-decoration: none; color: inherit; border-radius: 20px; padding: 22px 22px 20px;
-    background: rgba(12, 14, 34, .8); border: 1px solid rgba(160,175,255,.16); overflow: hidden;
-    transition: transform .18s, border-color .18s, box-shadow .18s; }
-  a.game::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 4px; background: linear-gradient(90deg, var(--c1), var(--c2)); }
-  a.game::after { content: ""; position: absolute; right: -60px; top: -60px; width: 190px; height: 190px; border-radius: 50%;
-    background: radial-gradient(circle, var(--c1), transparent 68%); opacity: .16; transition: opacity .18s; }
-  a.game:hover { transform: translateY(-4px); border-color: var(--c1); box-shadow: 0 18px 50px rgba(0,0,0,.5); }
-  a.game:hover::after { opacity: .34; }
-  .verb { font-size: 44px; font-weight: 800; line-height: 1; color: var(--c1); }
-  .name { font-size: 20px; font-weight: 800; font-style: italic; margin-top: 10px; }
-  .desc { color: #9fa4cf; font-size: 13.5px; line-height: 1.7; margin-top: 8px; min-height: 4.9em; }
-  .tags { margin-top: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
-  .tags span { font-size: 11px; padding: 3px 9px; border-radius: 99px; background: rgba(160,175,255,.12); color: #c9cdf0; }
-  .note { margin-top: 28px; color: #7f84ad; font-size: 12.5px; line-height: 1.8; }
-  .note a { color: #9fa4cf; }
+  :root { --text: #f4f3ff; --sub: #a3a8cf; --dim: #6f7499; --line: rgba(255,255,255,.09); --ease: cubic-bezier(.2,.8,.2,1); }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; min-height: 100%; background: #05060f; color: var(--text);
+    font-family: "Segoe UI", "Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", Meiryo, sans-serif; font-feature-settings: "palt"; -webkit-font-smoothing: antialiased; }
+  .sky { position: fixed; inset: 0; overflow: hidden; z-index: 0; pointer-events: none; }
+  .sky i { position: absolute; border-radius: 50%; filter: blur(90px); opacity: .5; animation: drift 22s ease-in-out infinite alternate; }
+  .sky i:nth-child(1) { width: 46vmax; height: 46vmax; left: -12vmax; top: -18vmax; background: #4b2bd6; }
+  .sky i:nth-child(2) { width: 38vmax; height: 38vmax; right: -12vmax; top: 4vmax; background: #c2287e; animation-duration: 28s; animation-delay: -8s; }
+  .sky i:nth-child(3) { width: 42vmax; height: 42vmax; left: 22vmax; bottom: -26vmax; background: #0f6fb8; animation-duration: 34s; animation-delay: -15s; }
+  @keyframes drift { to { transform: translate(6vmax, 4vmax) scale(1.15); } }
+  .sky::after { content: ""; position: absolute; inset: 0; background: radial-gradient(1200px 800px at 50% 0%, transparent, #05060f 78%); }
+  main { position: relative; z-index: 1; max-width: 1120px; margin: 0 auto; padding: clamp(36px, 7vw, 76px) 20px 70px; }
+  .eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 700; letter-spacing: .32em; color: #b9c3ff;
+    padding: 6px 12px; border-radius: 99px; border: 1px solid var(--line); background: rgba(255,255,255,.05); }
+  .eyebrow::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #7fe9ff; box-shadow: 0 0 10px #7fe9ff; animation: beat 1s infinite; }
+  @keyframes beat { 0% { transform: scale(1.8); } 40%, 100% { transform: scale(1); } }
+  h1 { margin: 18px 0 0; font-size: clamp(34px, 6.4vw, 68px); line-height: 1.08; font-weight: 800; font-style: italic; letter-spacing: -.01em;
+    background: linear-gradient(100deg, #8fefff, #b79bff 40%, #ff86c0 72%, #ffe29a); -webkit-background-clip: text; background-clip: text; color: transparent;
+    display: inline-block; padding-right: 12px; }
+  p.lead { color: var(--sub); margin: 16px 0 0; line-height: 1.85; font-size: clamp(14px, 1.7vw, 16.5px); max-width: 640px; }
+  p.lead b { color: var(--text); font-weight: 600; }
+  .steps { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
+  .steps span { font-size: 12.5px; color: var(--sub); padding: 7px 13px; border-radius: 99px; background: rgba(255,255,255,.05); border: 1px solid var(--line); }
+  .steps b { color: #fff; margin-right: 6px; font-weight: 800; font-style: italic; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 18px; margin-top: 38px; }
+  a.game { position: relative; display: flex; flex-direction: column; text-decoration: none; color: inherit; border-radius: 24px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.02)), rgba(14,16,36,.66); border: 1px solid var(--line);
+    backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); box-shadow: 0 20px 60px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.08);
+    transition: transform .35s var(--ease), border-color .35s, box-shadow .35s; animation: rise .7s var(--ease) both; }
+  a.game:nth-child(2) { animation-delay: .05s; } a.game:nth-child(3) { animation-delay: .1s; } a.game:nth-child(4) { animation-delay: .15s; }
+  a.game:nth-child(5) { animation-delay: .2s; } a.game:nth-child(6) { animation-delay: .25s; } a.game:nth-child(7) { animation-delay: .3s; }
+  @keyframes rise { from { opacity: 0; transform: translateY(18px); } }
+  a.game:hover { transform: translateY(-6px); border-color: var(--c1); box-shadow: 0 30px 80px rgba(0,0,0,.55), 0 0 60px -24px var(--c1); }
+  a.game:active { transform: translateY(-2px) scale(.99); }
+  .art { position: relative; height: 150px; overflow: hidden; background: radial-gradient(120% 120% at 50% 110%, color-mix(in srgb, var(--c1) 34%, transparent), transparent 62%), #080a1c; }
+  .art svg { position: absolute; inset: 0; width: 100%; height: 100%; transition: transform .6s var(--ease); }
+  a.game:hover .art svg { transform: scale(1.07); }
+  .art::after { content: ""; position: absolute; inset: auto 0 0 0; height: 46px; background: linear-gradient(transparent, rgba(14,16,36,.9)); }
+  .new { position: absolute; left: 14px; top: 14px; z-index: 2; font-size: 10.5px; font-weight: 800; letter-spacing: .14em; color: #0a0d1c; padding: 4px 10px; border-radius: 99px;
+    background: linear-gradient(100deg, var(--c1), var(--c2)); }
+  .body { padding: 16px 20px 20px; display: flex; flex-direction: column; flex: 1; }
+  .name { font-size: 21px; font-weight: 800; font-style: italic; letter-spacing: .01em; }
+  .en { font-size: 10px; letter-spacing: .3em; color: var(--c1); font-weight: 700; margin-bottom: 3px; }
+  .desc { color: var(--sub); font-size: 13.5px; line-height: 1.75; margin-top: 8px; flex: 1; }
+  .foot { display: flex; align-items: center; gap: 6px; margin-top: 14px; flex-wrap: wrap; }
+  .foot span { font-size: 11px; padding: 4px 10px; border-radius: 99px; background: rgba(255,255,255,.06); border: 1px solid var(--line); color: #c9cdf0; }
+  .go { margin-left: auto; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; color: #0a0d1c; flex: none;
+    background: linear-gradient(135deg, var(--c1), var(--c2)); transition: transform .35s var(--ease); box-shadow: 0 8px 22px -8px var(--c1); }
+  a.game:hover .go { transform: translateX(4px); }
+  .go svg { width: 15px; height: 15px; }
+  .note { margin-top: 34px; color: var(--dim); font-size: 12.5px; line-height: 1.9; }
+  @media (max-width: 520px) { .grid { grid-template-columns: 1fr; gap: 14px; margin-top: 28px; } .art { height: 132px; } }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
 </head>
 <body>
+<div class="sky"><i></i><i></i><i></i></div>
 <main>
-  <h1>マイ・ミュージックゲームズ</h1>
-  <p class="lead"><b>好きな曲をアップロードすると、その曲専用のステージが自動で作られます。</b><br>
-    遊び方の違うゲームから選んでください。一度選んだ曲は、ほかのゲームでもそのまま使えます。</p>
+  <span class="eyebrow">MY MUSIC GAMES</span><br>
+  <h1>あなたの曲が、<br>そのままステージになる。</h1>
+  <p class="lead"><b>好きな曲をアップロードすると、ゲームがその曲を聴き込み、テンポと拍に合わせた専用ステージを作ります。</b>
+    一度選んだ曲は、ほかのゲームでもそのまま使えます。</p>
+  <div class="steps"><span><b>1</b>ゲームを選ぶ</span><span><b>2</b>曲をアップロード</span><span><b>3</b>拍を聴いて確認して、スタート</span></div>
+
   <div class="grid">
-    <a class="game" href="groove.html" style="--c1:#ffe08a;--c2:#ff7ab8">
-      <div class="verb">踊る</div><div class="name">グルーヴフロア</div>
-      <div class="desc">曲のテンポを読み取り、一拍ごとに一歩。踏むたびにドラムが鳴る。ビートに乗り続けて、光るフロアの星を集める。</div>
-      <div class="tags"><span>矢印キー / タップ</span><span>ノリノリ</span><span>新作</span></div></a>
-    <a class="game" href="slash.html" style="--c1:#7fe9ff;--c2:#ff7ab8">
-      <div class="verb">斬る</div><div class="name">ビートスラッシュ</div>
-      <div class="desc">曲のリズムに乗って奥から飛んでくる矢印つきのクリスタルを、矢印の向きに斬る。振り下ろして振り上げて、流れるように。</div>
-      <div class="tags"><span>マウス / スワイプ</span><span>爽快感</span></div></a>
-    <a class="game" href="surf.html" style="--c1:#ff6ad5;--c2:#5ce1ff">
-      <div class="verb">走る</div><div class="name">ネオンサーフ</div>
-      <div class="desc">曲が光の道になり、盛り上がるほど加速する。左右に操縦して音のブロックを拾い、トゲをかわす。</div>
-      <div class="tags"><span>マウス / ← →</span><span>スピード感</span></div></a>
-    <a class="game" href="runner.html" style="--c1:#7dffb0;--c2:#b08cff">
-      <div class="verb">跳ぶ</div><div class="name">リズムランナー</div>
-      <div class="desc">曲から道が生まれる横スクロール。光の印が足元に来た瞬間にジャンプとスライディングで駆け抜ける。</div>
-      <div class="tags"><span>Space / ↓</span><span>シンプル</span></div></a>
-    <a class="game" href="shooter.html" style="--c1:#5ce1ff;--c2:#ffe08a">
-      <div class="verb">撃つ</div><div class="name">ビートシューター</div>
-      <div class="desc">曲の音がそのまま弾になる。動いてよけて、ジェムを集めて武器を育て、サビの弾幕でボスを押し切る。</div>
-      <div class="tags"><span>マウス / 指</span><span>育成・弾幕</span></div></a>
     <a class="game" href="hanabi.html" style="--c1:#ffd98a;--c2:#ff7ab8">
-      <div class="verb">咲かす</div><div class="name">音花火</div>
-      <div class="desc">あなたは花火師。音に合わせて花火玉を咲かせ、夜空を一枚の写真に仕上げる。鑑賞モードつき。</div>
-      <div class="tags"><span>クリック / タップ</span><span>美しさ</span></div></a>
-    <a class="game" href="classic.html" style="--c1:#9fa4cf;--c2:#5aa9ff">
-      <div class="verb">叩く</div><div class="name">クラシック4レーン</div>
-      <div class="desc">いちばん最初に作った、落ちてくるノーツを D F J K で叩くおなじみの形式。</div>
-      <div class="tags"><span>D F J K</span><span>定番</span></div></a>
+      <div class="art"><svg viewBox="0 0 320 150" preserveAspectRatio="xMidYMid slice" fill="none" stroke-linecap="round">
+        <g stroke="#ffd98a" stroke-width="2.4"><path d="M110 62V30M110 62l23-23M110 62h32M110 62l23 23M110 62v32M110 62l-23 23M110 62H78M110 62L87 39"/></g>
+        <g stroke="#ff7ab8" stroke-width="2" opacity=".9"><path d="M214 50V28M214 50l16-16M214 50h22M214 50l16 16M214 50v22M214 50l-16 16M214 50h-22M214 50l-16-16"/></g>
+        <g stroke="#9fd0ff" stroke-width="1.6" opacity=".8"><path d="M166 98v-13M166 98l9-9M166 98h13M166 98l9 9M166 98v13M166 98l-9 9M166 98h-13M166 98l-9-9"/></g>
+        <circle cx="110" cy="62" r="5" fill="#fff" stroke="none"/><circle cx="214" cy="50" r="4" fill="#fff" stroke="none"/>
+        <path d="M60 150V118M260 150v-26" stroke="#ffe9b8" stroke-width="1.5" opacity=".5"/></svg></div>
+      <div class="body"><div class="en">OTO-HANABI</div><div class="name">音花火</div>
+        <div class="desc">あなたは花火師。曲の拍とメロディに合わせて上がる花火玉を咲かせ、夜空を一枚の写真に仕上げる。</div>
+        <div class="foot"><span>タップ・長押し・フリック</span><span>スマホ向き</span>
+          <i class="go"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></i></div></div></a>
+
+    <a class="game" href="slash.html" style="--c1:#7fe9ff;--c2:#ff7ab8">
+      <div class="art"><svg viewBox="0 0 320 150" preserveAspectRatio="xMidYMid slice" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <g stroke="#7fe9ff" opacity=".35"><path d="M160 60L20 0M160 60L300 0M160 60L20 150M160 60l140 90"/><rect x="118" y="38" width="84" height="44"/><rect x="78" y="16" width="164" height="90"/></g>
+        <path d="M214 44l26 15v30l-26 15-26-15V59z" fill="#3a1d6e" stroke="#c9a8ff" stroke-width="2.4"/>
+        <path d="M202 80l12-13 12 13" stroke="#fff" stroke-width="4"/>
+        <path d="M112 62l18 10v21l-18 10-18-10V72z" fill="#0f4a66" stroke="#9af0ff" stroke-width="2"/>
+        <path d="M104 80l8 8 8-8" stroke="#fff" stroke-width="3"/>
+        <path d="M150 128L276 34" stroke="#fff" stroke-width="3.5"/><path d="M150 128L276 34" stroke="#7fe9ff" stroke-width="9" opacity=".3"/></svg></div>
+      <div class="body"><div class="en">BEAT SLASH</div><div class="name">ビートスラッシュ</div>
+        <div class="desc">リズムに乗って奥から飛んでくる矢印つきのクリスタルを、矢印の向きに斬る。振り下ろして振り上げて、流れるように。</div>
+        <div class="foot"><span>スワイプ / マウス</span><span>爽快感</span>
+          <i class="go"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></i></div></div></a>
+
+    <a class="game" href="groove.html" style="--c1:#ffe08a;--c2:#ff7ab8">
+      <div class="art"><svg viewBox="0 0 320 150" preserveAspectRatio="xMidYMid slice">
+        <g transform="translate(160 86) scale(1 .56) rotate(45)">
+          <rect x="-66" y="-66" width="42" height="42" rx="6" fill="#3b2a7a"/><rect x="-21" y="-66" width="42" height="42" rx="6" fill="#ff7ab8" opacity=".85"/><rect x="24" y="-66" width="42" height="42" rx="6" fill="#3b2a7a"/>
+          <rect x="-66" y="-21" width="42" height="42" rx="6" fill="#7fe9ff" opacity=".8"/><rect x="-21" y="-21" width="42" height="42" rx="6" fill="#ffe08a"/><rect x="24" y="-21" width="42" height="42" rx="6" fill="#3b2a7a"/>
+          <rect x="-66" y="24" width="42" height="42" rx="6" fill="#3b2a7a"/><rect x="-21" y="24" width="42" height="42" rx="6" fill="#3b2a7a"/><rect x="24" y="24" width="42" height="42" rx="6" fill="#b08cff" opacity=".85"/></g>
+        <circle cx="160" cy="70" r="13" fill="#fff"/><circle cx="160" cy="70" r="24" fill="none" stroke="#fff" stroke-width="2" opacity=".5"/>
+        <path d="M232 40l3.5 8.5L244 52l-8.5 3.5L232 64l-3.5-8.5L220 52l8.500-3.500z" fill="#ffe08a"/></svg></div>
+      <div class="body"><div class="en">GROOVE FLOOR</div><div class="name">グルーヴフロア</div>
+        <div class="desc">一拍ごとに一歩。踏むたびにドラムが鳴り、あなたの足が曲のリズム隊になる。ビートに乗り続けて星を集める。</div>
+        <div class="foot"><span>矢印キー / タップ</span><span>ノリノリ</span>
+          <i class="go"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></i></div></div></a>
+
+    <a class="game" href="classic.html" style="--c1:#7fd4ff;--c2:#b08cff">
+      <div class="art"><svg viewBox="0 0 320 150" preserveAspectRatio="xMidYMid slice">
+        <g stroke="#fff" opacity=".12"><path d="M100 0v150M140 0v150M180 0v150M220 0v150"/></g>
+        <rect x="104" y="22" width="32" height="13" rx="6.5" fill="#7fd4ff"/><rect x="184" y="48" width="32" height="13" rx="6.5" fill="#ff8fd0"/>
+        <rect x="144" y="76" width="32" height="13" rx="6.5" fill="#b08cff"/><rect x="104" y="100" width="32" height="13" rx="6.500" fill="#7fd4ff"/>
+        <path d="M100 118h120" stroke="#fff" stroke-width="3"/><path d="M100 118h120" stroke="#7fd4ff" stroke-width="10" opacity=".25"/></svg></div>
+      <div class="body"><div class="en">CLASSIC LANES</div><div class="name">クラシック4レーン</div>
+        <div class="desc">曲の拍に合わせて落ちてくる光を、線に重なった瞬間に叩く。おなじみの形式を、あなたの曲で。</div>
+        <div class="foot"><span>D F J K / タップ</span><span>定番</span>
+          <i class="go"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></i></div></div></a>
+
+    <a class="game" href="surf.html" style="--c1:#ff6ad5;--c2:#5ce1ff">
+      <div class="art"><svg viewBox="0 0 320 150" preserveAspectRatio="xMidYMid slice" fill="none">
+        <circle cx="160" cy="62" r="34" fill="#ff6ad5" opacity=".55"/><path d="M0 70h320" stroke="#5ce1ff" opacity=".5"/>
+        <g stroke="#5ce1ff" stroke-width="1.6" opacity=".8"><path d="M160 70L20 150M160 70l-46 80M160 70l46 80M160 70l140 80M70 96h180M40 120h240"/></g>
+        <rect x="176" y="96" width="22" height="16" rx="3" fill="#ffe08a"/><path d="M112 132l10-22 10 22z" fill="#ff5a7a"/></svg></div>
+      <div class="body"><div class="en">NEON SURF</div><div class="name">ネオンサーフ</div>
+        <div class="desc">曲が光の道になり、盛り上がるほど加速する。左右に操縦して音のブロックを拾い、トゲをかわす。</div>
+        <div class="foot"><span>マウス / ← →</span><span>スピード感</span>
+          <i class="go"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></i></div></div></a>
+
+    <a class="game" href="runner.html" style="--c1:#7dffb0;--c2:#b08cff">
+      <div class="art"><svg viewBox="0 0 320 150" preserveAspectRatio="xMidYMid slice" fill="none" stroke-linecap="round">
+        <path d="M0 118h320" stroke="#7dffb0" stroke-width="3"/><path d="M0 118h320" stroke="#7dffb0" stroke-width="12" opacity=".18"/>
+        <path d="M70 118c18-62 62-62 80 0" stroke="#fff" stroke-width="2" stroke-dasharray="3 7" opacity=".6"/>
+        <circle cx="110" cy="62" r="11" fill="#fff"/><rect x="186" y="92" width="18" height="26" rx="3" fill="#b08cff"/>
+        <path d="M250 92l9 9-9 9-9-9z" fill="#7dffb0"/><rect x="244" y="40" width="54" height="30" rx="4" fill="#b08cff" opacity=".7"/></svg></div>
+      <div class="body"><div class="en">RHYTHM RUNNER</div><div class="name">リズムランナー</div>
+        <div class="desc">曲から道が生まれる横スクロール。光の印が足元に来た瞬間に、ジャンプとスライディングで駆け抜ける。</div>
+        <div class="foot"><span>Space / ↓ / タップ</span><span>シンプル</span>
+          <i class="go"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></i></div></div></a>
+
+    <a class="game" href="shooter.html" style="--c1:#5ce1ff;--c2:#ffe08a">
+      <div class="art"><svg viewBox="0 0 320 150" preserveAspectRatio="xMidYMid slice" fill="none" stroke-linecap="round">
+        <path d="M160 132l-13 0 13-30 13 30z" fill="#5ce1ff"/><g stroke="#ffe08a" stroke-width="3.5"><path d="M160 92V74M160 60V46M138 96l-8-14M182 96l8-14"/></g>
+        <circle cx="96" cy="38" r="11" fill="#ff7ab8"/><circle cx="160" cy="24" r="14" fill="#b08cff"/><circle cx="226" cy="40" r="11" fill="#ff7ab8"/>
+        <path d="M250 96l6 6-6 6-6-6z" fill="#7dffb0"/><path d="M74 104l6 6-6 6-6-6z" fill="#7dffb0"/></svg></div>
+      <div class="body"><div class="en">BEAT SHOOTER</div><div class="name">ビートシューター</div>
+        <div class="desc">曲の音がそのまま弾になる。動いてよけて、ジェムを集めて武器を育て、サビの弾幕でボスを押し切る。</div>
+        <div class="foot"><span>マウス / 指</span><span>育成・弾幕</span>
+          <i class="go"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></i></div></div></a>
   </div>
   <p class="note">曲はこの端末のブラウザの中だけで処理され、どこにも送信されません。mp3・wav・ogg・m4a・flac などに対応しています。<br>
-    どのゲームにも「お手本」(自動プレイ)があるので、まず眺めてから遊ぶこともできます。</p>
+    どのゲームにも「お手本」(自動プレイ)があるので、まず眺めてから遊ぶこともできます。テンポが合わないときは、各ゲームの「拍を聴いて確認」で半分・倍に切り替えられます。</p>
 </main>
 </body>
 </html>

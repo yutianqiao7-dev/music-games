@@ -4,92 +4,22 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>音花火 - あなたの曲が花火大会になる</title>
+<link rel="stylesheet" href="common.css">
 <style>
-  :root {
-    --panel: rgba(9, 11, 28, .74);
-    --line: rgba(160, 175, 255, .18);
-    --text: #f1f0ff;
-    --sub: #9fa4cf;
-    --gold: #ffd98a;
-    --mincho: "Yu Mincho", "YuMincho", "Hiragino Mincho ProN", "Noto Serif JP", serif;
-    --gothic: "Segoe UI", "Yu Gothic UI", "Hiragino Sans", Meiryo, sans-serif;
-  }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; background: #02030c; color: var(--text);
-    font-family: var(--gothic); overflow: hidden; }
+  :root { --a1: #ffd98a; --a2: #ff9d7a; --a3: #ff7ab8; --gold: #ffd98a; --panel: rgba(10, 11, 28, .88);
+    --mincho: "Yu Mincho", "YuMincho", "Hiragino Mincho ProN", "Noto Serif JP", serif; }
+  html, body { background: #02030c; }
   #stage { position: fixed; inset: 0; will-change: transform; }
   canvas.layer { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
   #ui { touch-action: none; }
   #ui.playing { cursor: none; }
-  .screen { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
-    padding: 18px; overflow-y: auto; z-index: 10; }
-  .screen.on { display: flex; }
-  .dim { background: rgba(2, 3, 12, .55); }
-  .card { width: 100%; max-width: 520px; margin: auto; background: var(--panel); border: 1px solid var(--line);
-    border-radius: 20px; padding: 26px 28px; box-shadow: 0 24px 80px rgba(0,0,0,.55);
-    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
-  .card.wide { max-width: 640px; }
-  .brand { display: flex; align-items: baseline; gap: 14px; }
-  h1 { margin: 0; font-family: var(--mincho); font-weight: 700; font-size: 44px; letter-spacing: .12em;
-    background: linear-gradient(100deg, #ffe7a8, #ff9d7a 45%, #ff7ab8 75%, #a8b4ff);
-    -webkit-background-clip: text; background-clip: text; color: transparent; }
-  .brand small { color: var(--sub); letter-spacing: .32em; font-size: 11px; }
-  h2 { margin: 0 0 16px; font-family: var(--mincho); font-size: 24px; letter-spacing: .1em; }
-  p.lead { margin: 8px 0 18px; color: var(--sub); font-size: 14px; line-height: 1.7; }
-  p.lead b { color: var(--text); font-weight: 600; }
-  #drop { border: 1.5px dashed rgba(160,175,255,.35); border-radius: 14px; padding: 22px 16px; text-align: center;
-    cursor: pointer; transition: .15s; color: var(--sub); font-size: 13px; }
-  #drop:hover, #drop.over { border-color: var(--gold); color: var(--text); background: rgba(255,217,138,.06); }
-  #drop strong { display: block; color: var(--text); font-size: 16px; margin-bottom: 4px; }
-  #fileName { margin-top: 8px; color: var(--gold); font-size: 14px; word-break: break-all; }
-  .bar { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; margin-top: 10px; display: none; }
-  .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #ffd98a, #ff7ab8); }
-  .row { display: flex; align-items: center; gap: 12px; margin-top: 13px; font-size: 14px; }
-  .row > label:first-child, .row > span:first-child { width: 96px; color: var(--sub); flex: none; }
-  .seg { display: flex; flex: 1; background: rgba(0,0,0,.35); border-radius: 10px; padding: 3px; }
-  .seg button { flex: 1; border: 0; background: none; color: var(--sub); padding: 7px 0; border-radius: 8px;
-    font: inherit; cursor: pointer; }
-  .seg button.sel { background: rgba(160,175,255,.2); color: var(--text); font-weight: 600; }
-  input[type=range] { flex: 1; accent-color: var(--gold); min-width: 0; }
-  input[type=checkbox] { accent-color: var(--gold); width: 17px; height: 17px; }
-  .val { width: 62px; text-align: right; color: var(--sub); font-variant-numeric: tabular-nums; flex: none; }
-  .btn { display: block; width: 100%; margin-top: 10px; padding: 12px; border-radius: 12px; border: 1px solid var(--line);
-    background: rgba(0,0,0,.3); color: var(--text); font: inherit; font-size: 15px; cursor: pointer; }
-  .btn:hover:not(:disabled) { border-color: var(--gold); }
-  .btn.primary { margin-top: 18px; border: 0; font-weight: 700; color: #1a0f10; font-size: 16px;
-    background: linear-gradient(100deg, #ffe7a8, #ff9d7a 55%, #ff7ab8); }
-  .btn:disabled { opacity: .4; cursor: default; }
-  .btns { display: flex; gap: 10px; } .btns .btn { margin-top: 10px; }
-  .how { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 16px; }
-  .how div { background: rgba(0,0,0,.28); border-radius: 10px; padding: 10px 8px; font-size: 12px; color: var(--sub);
-    line-height: 1.55; text-align: center; }
-  .how b { display: block; color: var(--gold); font-family: var(--mincho); font-size: 15px; margin-bottom: 2px; }
-  .hint { margin-top: 12px; font-size: 12px; color: var(--sub); line-height: 1.7; }
-  .hint a { color: var(--sub); }
-  kbd { background: rgba(0,0,0,.4); border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; color: var(--text);
-    font-family: inherit; }
-  .err { color: #ff8f8f; font-size: 13px; margin-top: 8px; min-height: 1em; }
-  #photo { max-width: 100%; max-height: 46vh; margin: 0 auto; border-radius: 12px; display: block;
-    border: 1px solid var(--line); background: #02030c; }
-  .resHead { display: flex; align-items: center; gap: 18px; margin-top: 16px; }
-  #rank { font-family: var(--mincho); font-size: 68px; font-weight: 700; line-height: 1; width: 78px; text-align: center; flex: none; }
-  #rank.stamp { animation: stamp .55s cubic-bezier(.2, 1.6, .4, 1) .9s both; }
-  @keyframes stamp { from { transform: scale(3.4) rotate(-14deg); opacity: 0; } to { transform: none; opacity: 1; } }
-  #best { font-size: 13px; margin-top: 4px; color: var(--sub); }
-  #best.new { color: var(--gold); font-weight: 700; animation: blink .5s steps(2) 1.4s 4; }
-  @keyframes blink { 50% { opacity: .25; } }
-  #rankName { font-family: var(--mincho); font-size: 22px; letter-spacing: .12em; }
-  #resSong { color: var(--sub); font-size: 13px; word-break: break-all; margin-top: 4px; }
-  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 14px; }
-  .stats div { background: rgba(0,0,0,.28); border-radius: 10px; padding: 8px 4px; text-align: center; font-size: 11.5px; color: var(--sub); }
-  .stats b { display: block; font-size: 18px; color: var(--text); font-variant-numeric: tabular-nums; margin-top: 2px; }
-  #pauseBtn { position: fixed; top: 14px; right: 14px; z-index: 5; display: none; width: 40px; height: 40px;
-    border-radius: 50%; border: 1px solid var(--line); background: rgba(9,11,28,.6); color: var(--text);
-    font-size: 14px; cursor: pointer; }
-  @media (max-width: 480px) {
-    .card { padding: 20px 18px; } h1 { font-size: 36px; }
-    .row > label:first-child, .row > span:first-child { width: 80px; }
-  }
+  h1 { font-family: var(--mincho); font-style: normal; font-weight: 700; font-size: 48px; letter-spacing: .14em; }
+  h2, #rankName { font-family: var(--mincho); letter-spacing: .12em; }
+  #rank { font-family: var(--mincho); font-style: normal; padding-right: 0; }
+  #photo { max-width: 100%; max-height: 44vh; margin: 0 auto 18px; border-radius: 16px; display: block;
+    border: 1px solid var(--line2); background: #02030c; box-shadow: 0 18px 50px rgba(0,0,0,.5); }
+  .how.two { grid-template-columns: 1fr 1fr; margin-top: 8px; }
+  @media (max-width: 480px) { h1 { font-size: 38px; } .how.two { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -99,22 +29,24 @@
   <canvas class="layer" id="fg"></canvas>
 </div>
 <canvas class="layer" id="ui"></canvas>
-<button id="pauseBtn" title="ポーズ (Esc)">Ⅱ</button>
+<button id="pauseBtn" title="ポーズ (Esc)" aria-label="ポーズ"></button>
 
 <div class="screen on" id="scTitle">
   <div class="card">
-    <div class="brand"><h1>音花火</h1><small>OTO-HANABI</small></div>
+    <a class="back" href="index.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>ゲーム一覧</a>
+    <div class="brand"><small>OTO-HANABI</small><h1>音花火</h1></div>
     <p class="lead">あなたは花火師。<b>好きな曲をアップロードすると、その曲だけの花火大会が始まります。</b>
       音に合わせて花火玉を咲かせ、夜空を一枚の写真に仕上げましょう。</p>
     <div id="drop">
-      <strong>🎵 曲を選ぶ / ここにドロップ</strong>
-      mp3・wav・ogg・m4a・flac など
+      <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg></div>
+      <div><strong id="dropTitle">曲を選ぶ</strong><div class="fmt">タップして選ぶか、ここにドロップ ・ mp3 / wav / m4a など</div></div>
       <div id="fileName"></div>
-      <div id="listen" style="margin-top:4px;color:var(--sub);font-size:12.5px"></div>
+      <div id="listen"></div>
       <div class="bar" id="bar"><i></i></div>
     </div>
     <input type="file" id="file" accept="audio/*,.mp3,.wav,.ogg,.m4a,.flac,.aac" hidden>
     <div class="err" id="err"></div>
+    <div id="beat"></div>
 
     <div class="row"><span>難易度</span>
       <div class="seg" id="diff">
@@ -123,36 +55,37 @@
         <button data-v="hard">むずかしい</button>
       </div>
     </div>
-    <div class="row"><label for="speed">打ち上げ速度</label>
-      <input type="range" id="speed" min="1" max="10" step="1"><span class="val" id="speedV"></span></div>
-    <div class="row"><label for="offset">タイミング</label>
-      <input type="range" id="offset" min="-200" max="200" step="5"><span class="val" id="offsetV"></span></div>
-    <div class="row"><label for="sfx">効果音</label>
-      <input type="range" id="sfx" min="0" max="100" step="5"><span class="val" id="sfxV"></span></div>
     <div class="row"><label for="auto">鑑賞モード</label>
-      <input type="checkbox" id="auto"><span style="color:var(--sub);font-size:13px">自動で打ち上がる花火大会を眺める</span></div>
+      <input type="checkbox" id="auto"><span class="note">自動で上がる花火大会を眺める</span></div>
+    <details class="adv"><summary>こまかい設定</summary>
+      <div class="row"><label for="speed">打ち上げ速度</label>
+        <input type="range" id="speed" min="1" max="10" step="1"><span class="val" id="speedV"></span></div>
+      <div class="row"><label for="offset">タイミング</label>
+        <input type="range" id="offset" min="-200" max="200" step="5"><span class="val" id="offsetV"></span></div>
+      <div class="row"><label for="sfx">効果音</label>
+        <input type="range" id="sfx" min="0" max="100" step="5"><span class="val" id="sfxV"></span></div>
+    </details>
 
     <button class="btn primary" id="start" disabled>曲を選んでください</button>
 
     <div class="how">
-      <div><b>一、狙う</b>花火玉が昇っていく先の「輪」にカーソルを合わせる</div>
-      <div><b>二、咲かせる</b>輪が重なる瞬間にクリック(<kbd>Z</kbd> <kbd>X</kbd> <kbd>Space</kbd> でも可)</div>
-      <div><b>三、仕上げる</b>ぴったりなほど大きく丸く咲き、最後に一枚の写真になる</div>
+      <div><b>狙う</b>花火玉が昇っていく先の輪に、指やカーソルを合わせる</div>
+      <div><b>咲かせる</b>輪が重なる瞬間にタップ(<kbd>Z</kbd> <kbd>X</kbd> <kbd>Space</kbd> でも可)</div>
+      <div><b>仕上げる</b>ぴったりなほど大きく丸く咲き、最後に一枚の写真になる</div>
     </div>
-    <div class="how" style="grid-template-columns:1fr 1fr;margin-top:8px">
-      <div><b>長押し</b>外側に太い帯のある輪は、押したまま帯がなくなるまで離さない。途中の音で小花火が弾け、最後に満開</div>
-      <div><b>フリック</b>矢印のある輪は、押してすぐ矢印の向きへサッと払う。流星になって得点1.5倍</div>
+    <div class="how two">
+      <div><b>長押し</b>外側に太い帯のある輪は、押したまま帯がなくなるまで離さない</div>
+      <div><b>フリック</b>しずく形の的は、とがった先の向きへサッと払う。流星になって得点1.5倍</div>
     </div>
-    <div class="hint"><b style="color:var(--gold)">連発</b>すると得点が最大4倍に。<b style="color:var(--gold)">歓声ゲージ</b>が満タンになると「大祭」に突入し、
-      得点2倍・輪に触れるだけで咲き乱れます。たまに出る<b style="color:var(--gold)">虹玉</b>は大当たり。<br>スマホは輪を直接タップ。<kbd>Esc</kbd> でポーズ。曲はこの端末の中だけで処理され、どこにも送信されません。
-      ／ <a href="index.html">← ゲーム一覧へ</a></div>
+    <div class="hint">連発すると得点が最大4倍。ゲージが満タンで得点2倍になり、輪に触れるだけで咲き乱れます。七色に回る輪は大当たり。
+      <kbd>Esc</kbd> でポーズ。曲はこの端末の中だけで処理され、どこにも送信されません。</div>
   </div>
 </div>
 
 <div class="screen dim" id="scPause">
-  <div class="card">
+  <div class="card" style="max-width:380px">
     <h2>ひと休み</h2>
-    <button class="btn primary" id="resume">続ける</button>
+    <button class="btn primary" id="resume" style="margin-top:0">続ける</button>
     <button class="btn" id="retryP">最初からやり直す</button>
     <button class="btn" id="quitP">曲選択に戻る</button>
   </div>
@@ -176,9 +109,9 @@
       <div style="color:#b0b4cc">不発<b id="rM"></b></div>
     </div>
     <div class="btns">
-      <button class="btn primary" id="retryR" style="margin-top:14px">もう一度</button>
-      <button class="btn" id="save" style="margin-top:14px">写真を保存</button>
-      <button class="btn" id="quitR" style="margin-top:14px">曲選択へ</button>
+      <button class="btn primary" id="retryR">もう一度</button>
+      <button class="btn" id="save">写真を保存</button>
+      <button class="btn" id="quitR">曲選択へ</button>
     </div>
   </div>
 </div>
@@ -311,7 +244,7 @@ function listen(feat) {
     let b = t, bd = 1e9; for (const x of beats) { const d = Math.abs(x - t); if (d < bd) { bd = d; b = x; } }
     return bd < 0.5 ? b : t;
   }).sort((a, b) => a - b);
-  feat.info = `聴き取り結果: ♩${Math.round(feat.beatInfo.bpm)} ・ ${KEY_NAMES[key.tonic]}${key.minor ? '短調' : '長調'} ・ 見せ場 ${feat.climax.length} か所`;
+  feat.info = `${KEY_NAMES[key.tonic]}${key.minor ? '短調' : '長調'} ・ 見せ場 ${feat.climax.length} か所`;
 }
 
 async function extractFeatures(buffer, onProgress) {
@@ -1057,14 +990,17 @@ function updateStartBtn() {
   if (!song) { b.disabled = true; if (!b.dataset.busy) b.textContent = '曲を選んでください'; return; }
   const ch = makeChart(song.feat, settings.diff), n = ch.length, h = ch.filter(x => x.hold).length, f = ch.filter(x => x.flick).length;
   b.disabled = n === 0;
-  b.textContent = n ? `${settings.auto ? '鑑賞する' : '開演'} ― タップ ${n - h - f}・長押し ${h}・フリック ${f}` : '音の立ち上がりを検出できませんでした';
+  b.textContent = n ? `${settings.auto ? '鑑賞する' : '開演'} ・ タップ ${n - h - f}・長押し ${h}・フリック ${f}` : '音の立ち上がりを検出できませんでした';
 }
 
+// 拍の確認パネル (テンポを半分/倍に切り替えたら、拍に合わせ直す)
+const beatPanel = RG.beatPanel($('beat'), { song: () => song, change: () => { if (song) { listen(song.feat); $('listen').textContent = song.feat.info; } updateStartBtn(); } });
 async function loadBuffer(buffer, name) {
   const token = ++loadToken;
   song = null;
   $('err').textContent = '';
   $('fileName').textContent = name + ' のリズムを聴いています…'; $('listen').textContent = '';
+  beatPanel.refresh(); $('drop').classList.remove('has');
   $('start').dataset.busy = '1'; $('start').disabled = true; $('start').textContent = '花火を仕込んでいます…';
   setProgress(0);
   try {
@@ -1074,17 +1010,20 @@ async function loadBuffer(buffer, name) {
       if (phase === 1) $('fileName').textContent = name + ' のメロディと響きを聴いています…';
     });
     if (token !== loadToken) return;
+    const clean = name.replace(/\.[a-z0-9]{2,5}$/i, '');
+    feat.tempoMode = RG.tempoMode(clean);
     listen(feat);
-    song = { name: name.replace(/\.[a-z0-9]{2,5}$/i, ''), buffer, feat };
+    song = { name: clean, buffer, feat };
     const m = Math.floor(buffer.duration / 60), s = Math.floor(buffer.duration % 60);
-    $('fileName').textContent = `♪ ${song.name} (${m}:${String(s).padStart(2, '0')})`;
+    $('fileName').textContent = `${song.name} ・ ${m}:${String(s).padStart(2, '0')}`;
+    $('drop').classList.add('has'); $('dropTitle').textContent = '曲を変える';
     $('listen').textContent = feat.info;
   } catch (e) {
     if (token !== loadToken) return;
     $('fileName').textContent = '';
     $('err').textContent = '解析に失敗しました: ' + e.message;
   } finally {
-    if (token === loadToken) { setProgress(null); delete $('start').dataset.busy; updateStartBtn(); }
+    if (token === loadToken) { setProgress(null); delete $('start').dataset.busy; beatPanel.refresh(); updateStartBtn(); }
   }
 }
 async function loadFile(file) {
@@ -1248,7 +1187,7 @@ function placeNotes(g) {
 
 function startGame() {
   if (!song) return;
-  stopGame();
+  stopGame(); beatPanel.stop();
   if (G.W !== (window.innerWidth || 800) || G.H !== (window.innerHeight || 600)) resize();
   const ctx = ensureCtx();
   ctx.resume();
@@ -1480,7 +1419,7 @@ function finishGame() {
   g.rank = rank; g.acc = acc;
   $('rank').textContent = rank; $('rank').style.color = rc;
   $('rankName').textContent = g.auto ? '鑑賞モード' : rname + (g.counts.miss === 0 ? ' ・ 全弾開花' : '');
-  $('resSong').textContent = '♪ ' + song.name;
+  $('resSong').textContent = song.name;
   // 得点が駆け上がり、ランクの判子がドンと押される
   const t0 = performance.now(), el = $('rScore');
   (function roll() {
@@ -1681,6 +1620,27 @@ function drawTargets(now) {
         c.fillStyle = `hsla(${(pn * 0.3 + q * 120) % 360},100%,85%,${a})`;
         c.beginPath(); c.arc(n.x + Math.cos(an) * r0 * 1.28, n.y + Math.sin(an) * r0 * 1.28, 2.6, 0, TAU); c.fill();
       }
+    } else if (n.flick) {         // フリック: しずく形。とがった先へ払う
+      const ca = Math.cos(n.fa), sa = Math.sin(n.fa), tipD = r0 * 1.85, beta = Math.acos(1 / 1.85);
+      const tx = n.x + ca * tipD, ty = n.y + sa * tipD;
+      const drop = () => { c.beginPath(); c.moveTo(tx, ty); c.arc(n.x, n.y, r0, n.fa + beta, n.fa - beta + TAU); c.closePath(); };
+      c.fillStyle = `rgba(4,5,18,${0.62 * a})`; drop(); c.fill();
+      const fg = c.createLinearGradient(n.x - ca * r0, n.y - sa * r0, tx, ty);
+      fg.addColorStop(0, `hsla(${col},100%,70%,${0.08 * a})`); fg.addColorStop(1, `hsla(${col},100%,82%,${0.6 * a})`);
+      c.fillStyle = fg; drop(); c.fill();
+      c.strokeStyle = `hsla(${col},100%,82%,${a})`; c.lineWidth = 3; c.lineJoin = 'round'; drop(); c.stroke(); c.lineJoin = 'miter';
+      // 後ろへ流れる尾 (進む向きの反対側)
+      c.lineCap = 'round'; c.lineWidth = 2.5;
+      for (let q = -1; q <= 1; q++) {
+        const an = n.fa + Math.PI + q * 0.42, l0 = r0 * 1.22, l1 = r0 * (q ? 1.55 : 1.8);
+        c.strokeStyle = `hsla(${col},100%,82%,${(q ? 0.45 : 0.7) * a})`;
+        c.beginPath(); c.moveTo(n.x + Math.cos(an) * l0, n.y + Math.sin(an) * l0); c.lineTo(n.x + Math.cos(an) * l1, n.y + Math.sin(an) * l1); c.stroke();
+      }
+      c.lineCap = 'butt';
+      // 先端へ走る光
+      const ph = (pn / 480) % 1;
+      c.fillStyle = `rgba(255,255,255,${(1 - ph) * 0.95 * a})`;
+      c.beginPath(); c.arc(n.x + ca * tipD * ph * 0.92, n.y + sa * tipD * ph * 0.92, r0 * (0.2 - 0.1 * ph), 0, TAU); c.fill();
     } else {
       c.strokeStyle = `hsla(${col},100%,76%,${0.95 * a})`; c.lineWidth = n.big ? 3.5 : 2.5;
       c.beginPath(); c.arc(n.x, n.y, r0, 0, TAU); c.stroke();
@@ -1699,22 +1659,6 @@ function drawTargets(now) {
     if (n.hold) {
       c.fillStyle = `hsla(44,100%,80%,${0.9 * a})`;
       c.beginPath(); c.arc(n.x, n.y, r0 * 0.4, 0, TAU); c.fill();
-    }
-    if (n.flick) {                // フリック: 払う向きの矢印
-      const ca = Math.cos(n.fa), sa = Math.sin(n.fa), al = a;
-      const chev = (d, sz, alpha, w) => {
-        const tx = n.x + ca * d, ty = n.y + sa * d;
-        c.strokeStyle = `rgba(255,255,255,${alpha})`; c.lineWidth = w; c.lineCap = 'round'; c.lineJoin = 'round';
-        c.beginPath();
-        c.moveTo(tx - ca * sz - sa * sz, ty - sa * sz + ca * sz); c.lineTo(tx, ty); c.lineTo(tx - ca * sz + sa * sz, ty - sa * sz - ca * sz);
-        c.stroke();
-      };
-      c.strokeStyle = `rgba(255,255,255,${0.95 * al})`; c.lineWidth = 3.5; c.lineCap = 'round';
-      c.beginPath(); c.moveTo(n.x - ca * r0 * 0.42, n.y - sa * r0 * 0.42); c.lineTo(n.x + ca * r0 * 0.45, n.y + sa * r0 * 0.45); c.stroke();
-      chev(r0 * 0.47, r0 * 0.32, 0.95 * al, 3.5);
-      const ph = (pn / 420) % 1;                                    // 外へ流れる矢印
-      for (let q = 0; q < 2; q++) { const z = (ph + q * 0.5) % 1; chev(r0 * (1.25 + z * 0.7), r0 * 0.26, (1 - z) * 0.8 * al, 2.5); }
-      c.lineCap = 'butt'; c.lineJoin = 'miter';
     }
     // 縮んでくる輪: 的と重なった瞬間が「咲かせどき」
     if (p < 1 && !n.pending && k < 2) {          // 輪を出すのは次とその次だけ (重なって見えにくくならないように)
