@@ -36,7 +36,7 @@
     backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); box-shadow: 0 20px 60px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.08);
     transition: transform .35s var(--ease), border-color .35s, box-shadow .35s; animation: rise .7s var(--ease) both; }
   a.game:nth-child(2) { animation-delay: .05s; } a.game:nth-child(3) { animation-delay: .1s; } a.game:nth-child(4) { animation-delay: .15s; }
-  a.game:nth-child(5) { animation-delay: .2s; } a.game:nth-child(6) { animation-delay: .25s; } a.game:nth-child(7) { animation-delay: .3s; }
+  a.game:nth-child(5) { animation-delay: .2s; } a.game:nth-child(6) { animation-delay: .25s; } a.game:nth-child(7) { animation-delay: .3s; } a.game:nth-child(8) { animation-delay: .35s; }
   @keyframes rise { from { opacity: 0; transform: translateY(18px); } }
   a.game:hover { transform: translateY(-6px); border-color: var(--c1); box-shadow: 0 30px 80px rgba(0,0,0,.55), 0 0 60px -24px var(--c1); }
   a.game:active { transform: translateY(-2px) scale(.99); }
@@ -71,6 +71,22 @@
   <div class="steps"><span><b>1</b>ゲームを選ぶ</span><span><b>2</b>曲をアップロード</span><span><b>3</b>拍を聴いて確認して、スタート</span></div>
 
   <div class="grid">
+    <a class="game" href="seed.html" style="--c1:#8fefff;--c2:#ff86c0">
+      <span class="new">NEW</span>
+      <div class="art"><svg viewBox="0 0 320 150" preserveAspectRatio="xMidYMid slice" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M0 96c40-30 80 20 120-6s80-40 120-10 60 10 80-6v76H0z" fill="#3fd6a8" opacity=".22"/>
+        <path d="M0 112c50-24 90 16 140-4s90-30 180 6v36H0z" fill="#8f7bff" opacity=".28"/>
+        <path d="M54 104c30-50 70-50 100-8s60 34 96-28" stroke="#8fefff" stroke-width="9" opacity=".3"/>
+        <path d="M54 104c30-50 70-50 100-8s60 34 96-28" stroke="#fff" stroke-width="2.5"/>
+        <circle cx="54" cy="104" r="9" fill="#fff"/><circle cx="54" cy="104" r="17" stroke="#fff" stroke-width="2" opacity=".5"/>
+        <circle cx="154" cy="96" r="4" fill="#8fefff"/><circle cx="206" cy="112" r="4" fill="#8fefff"/>
+        <path d="M250 68l22-26-6 34a14 14 0 1 1-16-8z" fill="#3a1d6e" stroke="#ff86c0" stroke-width="2.4"/>
+        <path d="M160 40v-14M160 26c8 0 12 5 12 10" stroke="#ffe29a" stroke-width="2.4"/><circle cx="156" cy="42" r="4.500" fill="#ffe29a"/></svg></div>
+      <div class="body"><div class="en">SONG SEED</div><div class="name">ソングシード</div>
+        <div class="desc">決まったゲームはありません。曲の調・テンポ・音色・盛り上がりから、その曲だけの世界と遊び方が育ちます。</div>
+        <div class="foot"><span>たたく・斬る・なぞる</span><span>曲ごとに変わる</span>
+          <i class="go"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></i></div></div></a>
+
     <a class="game" href="hanabi.html" style="--c1:#ffd98a;--c2:#ff7ab8">
       <div class="art"><svg viewBox="0 0 320 150" preserveAspectRatio="xMidYMid slice" fill="none" stroke-linecap="round">
         <g stroke="#ffd98a" stroke-width="2.4"><path d="M110 62V30M110 62l23-23M110 62h32M110 62l23 23M110 62v32M110 62l-23 23M110 62H78M110 62L87 39"/></g>
