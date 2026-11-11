@@ -558,12 +558,75 @@ function idb() {
     r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
   });
 }
-RG.saveSong = async (name, data) => { try { (await idb()).transaction('s', 'readwrite').objectStore('s').put({ name, data }, 'last'); } catch (e) {} };
+RG.saveSong = async (name, data) => { try { const tx = (await idb()).transaction('s', 'readwrite'); tx.objectStore('s').put({ name, data }, 'last'); await new Promise(r => { tx.oncomplete = tx.onerror = tx.onabort = r; }); } catch (e) {} };
 RG.loadSong = async () => {
   try {
     const db = await idb();
     return await new Promise(res => { const q = db.transaction('s').objectStore('s').get('last'); q.onsuccess = () => res(q.result); q.onerror = () => res(null); });
   } catch (e) { return null; }
+};
+
+/* ------------------------------------------------------------
+ *  5.4 調 (長調/短調) と音の明るさを聴き取る → 効果音の音階や配色に使う
+ * ------------------------------------------------------------ */
+const CN = 4096;
+const cTab = (() => {
+  const n = CN, rev = new Uint16Array(n), cos = new Float32Array(n / 2), sin = new Float32Array(n / 2), win = new Float32Array(n), bits = Math.log2(n);
+  for (let i = 0; i < n; i++) { let r = 0; for (let b = 0; b < bits; b++) r |= ((i >> b) & 1) << (bits - 1 - b); rev[i] = r; }
+  for (let i = 0; i < n / 2; i++) { cos[i] = Math.cos(TAU * i / n); sin[i] = Math.sin(TAU * i / n); }
+  for (let i = 0; i < n; i++) win[i] = 0.5 - 0.5 * Math.cos(TAU * i / (n - 1));
+  return { rev, cos, sin, win };
+})();
+function fftBig(re, im) {
+  const n = CN, { rev, cos, sin } = cTab;
+  for (let i = 0; i < n; i++) { const j = rev[i]; if (j > i) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+  for (let size = 2; size <= n; size <<= 1) {
+    const h = size >> 1, step = n / size;
+    for (let i = 0; i < n; i += size) for (let j = 0, k = 0; j < h; j++, k += step) {
+      const a = i + j, b = a + h, tr = re[b] * cos[k] + im[b] * sin[k], ti = im[b] * cos[k] - re[b] * sin[k];
+      re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
+    }
+  }
+}
+// 和音とメロディ (12音それぞれの強さ) と、音の明るさ
+RG.tonal = function (buffer) {
+  const sr = buffer.sampleRate, len = buffer.length, hop = CN * 2;
+  const a = buffer.getChannelData(0), b = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : null;
+  const cF = Math.max(1, Math.floor((len - CN) / hop) + 1), chroma = new Float32Array(cF * 12);
+  const re = new Float32Array(CN), im = new Float32Array(CN), pc = new Int8Array(CN / 2).fill(-1), lg = new Float32Array(CN / 2);
+  for (let k = 1; k < CN / 2; k++) {
+    const hz = k * sr / CN; lg[k] = Math.log2(hz);
+    if (hz >= 196 && hz <= 2100) pc[k] = ((Math.round(12 * Math.log2(hz / 261.6256)) % 12) + 12) % 12;
+  }
+  const k0 = Math.ceil(150 * CN / sr), k1 = Math.min(CN / 2 - 1, Math.floor(6000 * CN / sr));
+  let bs = 0, bn = 0;
+  if (len >= CN) for (let f = 0; f < cF; f++) {
+    const off = f * hop;
+    for (let i = 0; i < CN; i++) { re[i] = (b ? a[off + i] + b[off + i] : a[off + i]) * cTab.win[i]; im[i] = 0; }
+    fftBig(re, im);
+    let cs = 0, cw = 0;
+    for (let k = 1; k <= k1; k++) {
+      const m = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
+      if (pc[k] >= 0) chroma[f * 12 + pc[k]] += m;
+      if (k >= k0) { cs += m * lg[k]; cw += m; }
+    }
+    if (cw > 1e-4) { bs += cs / cw; bn++; }
+  }
+  const tot = new Float64Array(12);
+  for (let f = 0; f < cF; f++) { let sm = 0; for (let k = 0; k < 12; k++) sm += chroma[f * 12 + k]; if (sm > 1e-6) for (let k = 0; k < 12; k++) tot[k] += chroma[f * 12 + k] / sm; }
+  const MAJ = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88], MIN = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+  const corr = (prof, sh) => {
+    let ma = 0, mb = 0; for (let k = 0; k < 12; k++) { ma += tot[k]; mb += prof[k]; } ma /= 12; mb /= 12;
+    let n = 0, da = 0, db = 0;
+    for (let k = 0; k < 12; k++) { const x = tot[(k + sh) % 12] - ma, y = prof[k] - mb; n += x * y; da += x * x; db += y * y; }
+    return n / Math.sqrt(da * db + 1e-12);
+  };
+  let key = { tonic: 0, minor: false }, kb = -2;
+  for (let sh = 0; sh < 12; sh++) for (const minor of [false, true]) { const c = corr(minor ? MIN : MAJ, sh); if (c > kb) { kb = c; key = { tonic: sh, minor }; } }
+  const scale = new Uint8Array(12);
+  (key.minor ? [0, 3, 5, 7, 10] : [0, 2, 4, 7, 9]).forEach(d => scale[(key.tonic + d) % 12] = 1);
+  const bright = clamp(((bn ? bs / bn : 10) - Math.log2(500)) / (Math.log2(2200) - Math.log2(500)), 0, 1);
+  return { chroma, cF, hopSec: hop / sr, key, scale, bright };
 };
 
 /* ------------------------------------------------------------
@@ -868,7 +931,7 @@ RG.shell = function (cfg) {
     if (type === 'down') P.down = true; else if (type === 'up') P.down = false;
     cfg.pointer && cfg.pointer(api, type, e);
   };
-  cv.addEventListener('pointerdown', e => { cv.setPointerCapture && cv.setPointerCapture(e.pointerId); ptr('down', e); });
+  cv.addEventListener('pointerdown', e => { try { cv.setPointerCapture(e.pointerId); } catch (err) {} ptr('down', e); });
   window.addEventListener('pointermove', e => ptr('move', e));
   window.addEventListener('pointerup', e => ptr('up', e));
   cv.addEventListener('contextmenu', e => e.preventDefault());

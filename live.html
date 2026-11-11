@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>ライブレーン - あなたの曲でライブ</title>
+<link rel="stylesheet" href="common.css">
+</head>
+<body>
+<script src="common.js"></script>
+<script>
+'use strict';
+const { TAU, clamp, rand } = RG;
+// hold: 長押しにする割合 / slide: そのうち指を動かすスライドの割合 / flick: フリックの割合 / dbl: 同時押しにする強い音の割合
+const DIFF = {
+  easy:   { mult: 1.7,  gap: 0.5,  hold: 0.10, slide: 0,    flick: 0.05, dbl: 0 },
+  normal: { mult: 1.45, gap: 0.3,  hold: 0.13, slide: 0.35, flick: 0.10, dbl: 0.06 },
+  hard:   { mult: 1.25, gap: 0.19, hold: 0.16, slide: 0.5,  flick: 0.14, dbl: 0.15 },
+};
+const WIN = { perfect: 0.05, great: 0.1, good: 0.15 };
+const JUDGE = {
+  perfect: { label: 'PERFECT', w: 1,    c1: '#fff3b0', c2: '#ff9ad5' },
+  great:   { label: 'GREAT',   w: 0.7,  c1: '#b9f6ff', c2: '#7aa8ff' },
+  good:    { label: 'GOOD',    w: 0.35, c1: '#c9ffd9', c2: '#6fe0a8' },
+  miss:    { label: 'MISS',    w: 0,    c1: '#c5c8dc', c2: '#8a8fb0' },
+};
+const KEYMAP = { 7: ['KeyS', 'KeyD', 'KeyF', 'Space', 'KeyJ', 'KeyK', 'KeyL'], 5: ['KeyD', 'KeyF', 'Space', 'KeyJ', 'KeyK'] };
+const KEYCAP = { 7: ['S', 'D', 'F', '␣', 'J', 'K', 'L'], 5: ['D', 'F', '␣', 'J', 'K'] };
+const fx = new RG.Fx();
+let notes = [], live = [], head = 0, J = null, counts = {}, L = 7, APP = 1.3, per = 0.5, beat0 = 0, PAL = { h1: 195, h2: 150, h3: 325 }, SCALE = [0, 2, 4, 7, 9], TONIC = 0;
+let G = { cx: 0, vy: 0, lineY: 0, laneW: 60 }, touches = new Map(), press = [], rings = [], verdict = null, total = 0;
+
+/* ============================================================
+ *  1. 譜面: 曲の拍に合わせた音の並びを、レーンと種類 (タップ・長押し・スライド・フリック・同時押し) に振り分ける
+ * ============================================================ */
+function build(song, diff, lanes) {
+  const feat = song.feat, D = DIFF[diff], B = RG.beats(feat), p = B.period, rng = RG.rng(feat.seed + diff.length * 71 + lanes);
+  const src = RG.onsets(feat, D), half = (lanes - 1) / 2, out = [];
+  const sideRange = s => s < 0 ? [0, Math.ceil(half) - 1] : [Math.floor(half) + 1, lanes - 1];
+  const snap = t => { let b = t, bd = 1e9; for (let k = 0; k < 2; k++) for (const x of B.beats) { const y = x + k * p / 2, d = Math.abs(y - t); if (d < bd) { bd = d; b = y; } } return b; };
+  const lastT = src.length ? src[src.length - 1].t : 0;
+  let lane = Math.round(half), dir = 1, busy = { side: 0, until: -9, lo: 0, hi: 0 }, prevT = -9;
+  for (let i = 0; i < src.length; i++) {
+    const n = src[i], gap = n.t - prevT;
+    let lo = 0, hi = lanes - 1;
+    const holding = n.t < busy.until + 0.12;
+    if (holding) { if (busy.side < 0) lo = Math.min(lanes - 1, busy.hi + 1); else hi = Math.max(0, busy.lo - 1); }
+    // レーン: 階段のように流れ、ときどき折り返す
+    if (gap > p * 2.5) lane = lo + Math.floor(rng() * (hi - lo + 1));
+    else {
+      if (rng() < 0.28) dir = -dir;
+      lane += dir * (gap < p * 0.6 ? 1 : 1 + Math.floor(rng() * 2));
+    }
+    if (lane < lo) { lane = Math.min(hi, lo + (lo - lane)); dir = 1; }
+    if (lane > hi) { lane = Math.max(lo, hi - (lane - hi)); dir = -1; }
+    lane = clamp(lane, lo, hi);
+    const o = { t: n.t, lane, kind: 'tap', strong: n.strong, next: n.next, big: n.big, type: n.type, done: false };
+    // 長押し: 音が伸びて次の音まで間があくところ、または数拍ぶんのフレーズ。押している手と反対の手で他の音を叩く
+    const sustain = n.next >= p * 1.4;
+    if (!holding && n.t > busy.until + p && n.t < lastT - p * 3 && (sustain ? rng() < 0.75 : rng() < D.hold)) {
+      const side = lane < half ? -1 : lane > half ? 1 : (rng() < 0.5 ? -1 : 1), [a, b] = sideRange(side);
+      o.lane = lane = clamp(lane, a, b);
+      const end = snap(sustain ? n.t + Math.max(p, Math.min(n.next - p * 0.5, p * 4)) : n.t + p * (rng() < 0.5 ? 2 : 4));
+      if (end - n.t >= p * 0.9) {
+        o.kind = 'hold'; o.end = end;
+        let mn = lane, mx = lane;
+        if (!sustain && rng() < D.slide && b > a) {          // スライド: 拍ごとに隣のレーンへ
+          o.path = [{ t: n.t, lane }]; let l = lane, sd = rng() < 0.5 ? -1 : 1;
+          for (let t = n.t + p; t < end + 0.01; t += p) {
+            if (l + sd < a || l + sd > b) sd = -sd;
+            l += sd; o.path.push({ t: Math.min(t, end), lane: l }); mn = Math.min(mn, l); mx = Math.max(mx, l);
+          }
+          o.path[o.path.length - 1].t = end;
+        }
+        busy = { side, until: end, lo: mn, hi: mx };
+      }
+    }
+    out.push(o);
+    prevT = n.t;
+  }
+  // フリック: アクセントの強い音とフレーズの締め
+  const taps = out.map((o, i) => i).filter(i => i > 3 && out[i].kind === 'tap' && !out[i].big);
+  taps.sort((x, y) => (out[x].strong - (out[x].next > 0.7 ? 0.4 : 0)) - (out[y].strong - (out[y].next > 0.7 ? 0.4 : 0)));
+  let fq = Math.floor(out.length * D.flick);
+  for (const i of taps) { if (fq <= 0) break; if ((out[i - 1] && out[i - 1].kind === 'flick') || (out[i + 1] && out[i + 1].kind === 'flick')) continue; out[i].kind = 'flick'; fq--; }
+  // 同時押し: とくに強い音は左右対称にもう一つ
+  const res = [];
+  let hi = 0; const holds = out.filter(o => o.kind === 'hold');
+  for (const o of out) {
+    res.push(o);
+    if (o.kind === 'hold' || diff === 'easy' || !(o.big || o.strong < D.dbl)) continue;
+    while (hi < holds.length && holds[hi].end < o.t - 0.12) hi++;
+    if (hi < holds.length && holds[hi].t <= o.t + 0.12) continue;           // 片手が長押し中は同時押しにしない
+    let m = lanes - 1 - o.lane; if (m === o.lane) m = clamp(o.lane + (rng() < 0.5 ? -2 : 2), 0, lanes - 1);
+    const q = { t: o.t, lane: m, kind: o.kind, strong: o.strong, next: o.next, big: false, type: o.type, done: false, pair: o };
+    o.pair = q; res.push(q);
+  }
+  return res;
+}
+const laneOf = (n, t) => {                                   // スライド中のレーン位置 (小数)
+  const p = n.path; if (!p) return n.lane;
+  if (t <= p[0].t) return p[0].lane;
+  for (let i = 1; i < p.length; i++) if (t <= p[i].t) { const k = (t - p[i - 1].t) / (p[i].t - p[i - 1].t), e = k * k * (3 - 2 * k); return p[i - 1].lane + (p[i].lane - p[i - 1].lane) * e; }
+  return p[p.length - 1].lane;
+};
+
+/* ============================================================
+ *  2. 画面の形 (奥から手前へ伸びる道)
+ * ============================================================ */
+function lanesFor(api) { return api.W > api.H * 1.05 ? 7 : 5; }
+function layout(api) {
+  const { W, H } = api, wide = W > H * 1.05;
+  G.cx = W / 2; G.vy = H * (wide ? 0.06 : 0.1); G.lineY = H * (wide ? 0.8 : 0.79);
+  G.laneW = Math.min(W * 0.98 / L, wide ? H * 0.21 : 999);
+}
+const depth = z => z >= 0 ? 1 / (1 + z * 3.3) : 1 - z * 1.4;
+function proj(lanePos, z) { const s = depth(z); return { x: G.cx + (lanePos - (L - 1) / 2) * G.laneW * s, y: G.vy + (G.lineY - G.vy) * s, s }; }
+const lanePosAt = x => (x - G.cx) / G.laneW + (L - 1) / 2;
+
+/* ============================================================
+ *  3. 判定
+ * ============================================================ */
+function sfxHit(kind, lane, flick) {
+  const v = kind === 'perfect' ? 1 : kind === 'great' ? 0.75 : 0.5;
+  RG.sfx.noise(6200, 0.035, 0.2 * v, 'highpass', 1);                                   // 指に返る「チッ」
+  RG.sfx.noise(1900, 0.07, 0.16 * v, 'bandpass', 0.6);
+  const deg = SCALE[lane % SCALE.length] + 12 * Math.floor(lane / SCALE.length), f = 523.25 * Math.pow(2, (TONIC + deg) / 12);   // レーンごとに曲の調の音階
+  RG.sfx.tone(f, 0.22, 0.07 * v, 'sine');
+  if (kind === 'perfect') RG.sfx.tone(f * 2, 0.16, 0.035, 'sine');
+  if (flick) RG.sfx.noise(900, 0.2, 0.2, 'bandpass', 4.5);
+}
+function judge(api, n, kind, o = {}) {
+  const K = JUDGE[kind], pn = performance.now();
+  counts[kind]++;
+  verdict = { kind, t0: pn };
+  if (kind === 'miss') { J.miss(); return; }
+  J.hit(K.w, { mul: o.mul || (n.big ? 1.5 : 1) });
+  const lane = o.lane ?? n.lane, q = proj(lane, 0), hue = n.kind === 'flick' ? PAL.h3 : n.kind === 'hold' ? PAL.h2 : PAL.h1;
+  rings.push({ lane, t0: pn, hue, big: kind === 'perfect', flick: n.kind === 'flick' && !o.tail });
+  fx.burst(q.x, q.y, kind === 'perfect' ? 16 : 8, { colors: [`hsl(${hue} 100% 74%)`, '#fff'], v0: 120, v1: kind === 'perfect' ? 520 : 300, g: 500 * api.S, s: 2.4 });
+  if (!o.silent) sfxHit(kind, Math.round(lane), n.kind === 'flick');
+  if (!api.auto && navigator.vibrate && touches.size) { try { navigator.vibrate(kind === 'perfect' ? 10 : 5); } catch (e) {} }
+}
+const timing = a => J.feverOn || a <= WIN.perfect ? 'perfect' : a <= WIN.great ? 'great' : 'good';
+function hitAt(api, tc) {
+  const lf = tc.kb ? tc.lane : lanePosAt(tc.x), li = clamp(Math.round(lf), 0, L - 1);
+  press[li] = performance.now();
+  if (api.state !== 'play' || api.auto) return;
+  const t = api.time();
+  let best = null, bd = 9;
+  for (let i = head; i < notes.length; i++) {
+    const n = notes[i];
+    if (n.t - t > WIN.good) break;
+    if (n.done || n.pending) continue;
+    if (best && n.t > best.t + 0.02) break;                 // いちばん早い音から
+    const d = Math.abs(n.lane - lf);
+    if (d <= (tc.kb ? 0.5 : 0.95) && d < bd) { best = n; bd = d; }
+  }
+  if (!best) { RG.sfx.noise(5000, 0.02, 0.05, 'highpass', 1); return; }
+  const kind = timing(Math.abs(t - best.t));
+  if (best.kind === 'flick') {
+    if (tc.kb) { best.done = true; judge(api, best, kind); }
+    else { best.pending = true; tc.flick = { n: best, kind }; }
+  } else {
+    best.done = true; judge(api, best, kind);
+    if (best.kind === 'hold') { best.active = true; best.lost = null; live.push(best); }
+  }
+}
+function endFlick(api, tc, ok) {
+  const f = tc.flick; tc.flick = null;
+  if (!f || f.n.done) return;
+  f.n.done = true; f.n.pending = false;
+  judge(api, f.n, ok ? f.kind : 'good', { mul: ok ? 1.5 : 1 });
+}
+
+/* ============================================================
+ *  4. 描画の部品
+ * ============================================================ */
+function rrect(c, x, y, w, h, r) { c.beginPath(); if (c.roundRect) c.roundRect(x, y, w, h, Math.min(r, h / 2, w / 2)); else c.rect(x, y, w, h); }
+function drawNote(c, q, kind, hue, big, glowK = 1) {
+  const w = G.laneW * q.s * 0.86, h = Math.max(4, G.laneW * q.s * (big ? 0.34 : 0.27)), x = q.x - w / 2, y = q.y - h / 2;
+  const g = c.createLinearGradient(0, y, 0, y + h);
+  g.addColorStop(0, `hsl(${hue} 100% 90%)`); g.addColorStop(0.5, `hsl(${hue} 100% 66%)`); g.addColorStop(1, `hsl(${hue} 90% 46%)`);
+  c.shadowColor = `hsl(${hue} 100% 62%)`; c.shadowBlur = (big ? 22 : 13) * q.s * glowK;
+  c.fillStyle = g; rrect(c, x, y, w, h, h / 2); c.fill(); c.shadowBlur = 0;
+  c.fillStyle = 'rgba(255,255,255,.75)'; rrect(c, x + w * 0.08, y + h * 0.14, w * 0.84, h * 0.24, h); c.fill();     // つや
+  if (kind === 'flick') {                                   // フリック: 上へ跳ねる三角を重ねた形
+    const s = w * 0.19, pn = performance.now(), bob = (pn / 380) % 1;
+    c.fillStyle = `hsl(${hue} 100% 82%)`; c.shadowColor = `hsl(${hue} 100% 62%)`; c.shadowBlur = 12 * q.s;
+    c.beginPath(); c.moveTo(q.x - s, y + h * 0.1); c.lineTo(q.x, y - s * 1.25); c.lineTo(q.x + s, y + h * 0.1); c.closePath(); c.fill(); c.shadowBlur = 0;
+    c.strokeStyle = `hsla(${hue},100%,88%,${1 - bob})`; c.lineWidth = Math.max(1.5, 3 * q.s); c.lineCap = 'round'; c.lineJoin = 'round';
+    c.beginPath(); c.moveTo(q.x - s * 0.8, y - s * (1.0 + bob * 1.4)); c.lineTo(q.x, y - s * (1.8 + bob * 1.4)); c.lineTo(q.x + s * 0.8, y - s * (1.0 + bob * 1.4)); c.stroke();
+  } else if (kind === 'hold') {
+    c.fillStyle = 'rgba(255,255,255,.9)'; rrect(c, q.x - w * 0.12, y + h * 0.3, w * 0.24, h * 0.4, h); c.fill();
+  }
+}
+function stage(c, W, H, t, pulse, fever) {                  // ライブ会場: 照明と、拍で脈打つ光
+  const pn = performance.now() / 1000, bass = RG.audio.bass, hs = fever ? (pn * 50) % 360 : 0, h1 = (PAL.h1 + hs) % 360, h3 = (PAL.h3 + hs) % 360;
+  const g = c.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, `hsl(${h1} 60% ${9 + bass * 8}%)`); g.addColorStop(0.5, '#070818'); g.addColorStop(1, '#04040c');
+  c.fillStyle = g; c.fillRect(0, 0, W, H);
+  const halo = c.createRadialGradient(G.cx, G.vy, 0, G.cx, G.vy, Math.max(W, H) * 0.55);
+  halo.addColorStop(0, `hsla(${h3},100%,72%,${0.4 + pulse * 0.25 + bass * 0.2})`); halo.addColorStop(0.35, `hsla(${h1},100%,60%,${0.12 + pulse * 0.06})`); halo.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = halo; c.fillRect(0, 0, W, H);
+  c.save(); c.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 6; i++) {                             // 左右に振れるスポットライト
+    const x0 = W * (0.08 + i * 0.168), a = Math.sin(pn * (0.5 + i * 0.07) + i * 1.3) * 0.5 + (i - 2.5) * -0.1, len = H * 1.1, hw = W * 0.05;
+    const hue = [h1, h3, PAL.h2][i % 3], lg = c.createLinearGradient(x0, -10, x0 + Math.sin(a) * len, Math.cos(a) * len);
+    lg.addColorStop(0, `hsla(${hue},100%,70%,${0.2 + bass * 0.2 + pulse * 0.08})`); lg.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = lg; c.beginPath(); c.moveTo(x0 - 5, -10); c.lineTo(x0 + 5, -10);
+    c.lineTo(x0 + Math.sin(a) * len + hw * 2.4, Math.cos(a) * len); c.lineTo(x0 + Math.sin(a) * len - hw * 2.4, Math.cos(a) * len); c.fill();
+  }
+  c.restore();
+}
+
+RG.shell({
+  id: 'live', title: 'ライブレーン', sub: 'LIVE LANES', colors: ['#7fe9ff', '#b79bff', '#ff86c0'],
+  defaults: { speed: 6 },
+  options: [{ key: 'speed', label: 'ノーツの速さ', min: 1, max: 10, fmt: v => v.toFixed ? v.toFixed(0) : v }],
+  lead: '<b>あなたの曲でライブ。奥から流れてくる光を、ラインに重なる瞬間に両手の指で叩く。</b>タップ・長押し・スライド・フリック・同時押しが、曲の拍に合わせて組み上がります。',
+  how: [['タップ', '光がラインに重なる瞬間に、そのレーンを叩く'],
+        ['長押し・スライド', '帯のついた光は押したまま。帯が曲がったら指をすべらせてついていく'],
+        ['フリック', '三角のついた光は、叩いてそのままサッと払う']],
+  hint: 'スマホは横向きだと7レーン、縦向きだと5レーンになります。キーボードは <kbd>S</kbd> <kbd>D</kbd> <kbd>F</kbd> <kbd>Space</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>。',
+  count(feat, d, api) {
+    const song = api.song; if (!feat.tonal) feat.tonal = RG.tonal(song.buffer);
+    const T = feat.tonal, h1 = (T.key.tonic * 30 + (T.key.minor ? 195 : 30)) % 360, root = document.documentElement.style;
+    api._pal = { h1, h2: (h1 + 130) % 360, h3: (h1 + 285) % 360 };
+    root.setProperty('--a1', `hsl(${h1} 100% 74%)`); root.setProperty('--a2', `hsl(${(h1 + 130) % 360} 100% 74%)`); root.setProperty('--a3', `hsl(${(h1 + 285) % 360} 100% 74%)`);
+    const ch = build(song, d, lanesFor(api)), k = { tap: 0, hold: 0, flick: 0 }; ch.forEach(n => k[n.kind]++); api._k = k;
+    return ch.length;
+  },
+  countLabel: (n, api) => `タップ ${api._k.tap}・長押し ${api._k.hold}・フリック ${api._k.flick}`,
+
+  start(api) {
+    const feat = api.song.feat, B = RG.beats(feat), T = feat.tonal || (feat.tonal = RG.tonal(api.song.buffer));
+    L = lanesFor(api); layout(api);
+    notes = build(api.song, api.diff, L).sort((a, b) => a.t - b.t);
+    per = B.period; beat0 = B.beats[0] || 0; PAL = api._pal || PAL; TONIC = T.key.tonic; SCALE = T.key.minor ? [0, 3, 5, 7, 10] : [0, 2, 4, 7, 9];
+    APP = clamp(2.5 - api.settings.speed * 0.19, 0.55, 2.4);
+    head = 0; live = []; rings = []; verdict = null; touches.clear(); press = new Array(L).fill(0); fx.clear();
+    counts = { perfect: 0, great: 0, good: 0, miss: 0 };
+    total = notes.length + notes.filter(n => n.kind === 'hold').length;
+    J = new RG.Juice(api, { lead: api.auto ? 'お手本プレイ' : '光がラインに重なる瞬間に叩こう', sub: () => `${J.pct().toFixed(1)}%`, onFever() { fx.flash = 0.4; fx.shake = 7; } });
+  },
+  resize(api) { layout(api); },
+  quit() { notes = []; live = []; J = null; touches.clear(); fx.clear(); },
+  end(api) {
+    api.finish({ score: J.score, pct: J.pct(), names: ['伝説のライブ', '大成功', '成功', 'まずまず', 'リハーサル'], title: counts.miss === 0 ? 'フルコンボ' : '',
+      stats: [['PERFECT', counts.perfect, '#ffe08a'], ['GREAT', counts.great, '#9fd8ff'], ['GOOD', counts.good, '#9ff0c8'], ['MISS', counts.miss, '#b0b4cc'],
+        ['最大コンボ', J.maxCombo], ['フィーバー', J.fevers + ' 回'], ['ノーツ', total], ['テンポ', Math.round(60 / per)]] });
+  },
+
+  pointer(api, type, e) {
+    if (type === 'down') {
+      if (e.clientY < api.H * 0.28) return;
+      const tc = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, flick: null };
+      touches.set(e.pointerId, tc); hitAt(api, tc);
+    } else if (type === 'move') {
+      const tc = touches.get(e.pointerId); if (!tc) return;
+      tc.x = e.clientX; tc.y = e.clientY;
+      if (tc.flick && Math.hypot(tc.x - tc.x0, tc.y - tc.y0) >= Math.max(18, G.laneW * 0.3)) endFlick(api, tc, true);
+    } else {
+      const tc = touches.get(e.pointerId); if (!tc) return;
+      if (tc.flick) endFlick(api, tc, false);               // 払わずに離した
+      touches.delete(e.pointerId);
+    }
+  },
+  key(api, code, down) {
+    const lane = (KEYMAP[L] || []).indexOf(code); if (lane < 0) return;
+    if (down) { const tc = { kb: true, lane, x: proj(lane, 0).x, y: G.lineY }; touches.set('k' + lane, tc); hitAt(api, tc); }
+    else touches.delete('k' + lane);
+  },
+
+  frame(api, dt) {
+    const { c, W, H, S } = api, pn = performance.now(), playing = api.state === 'play' || api.state === 'pause' || api.state === 'ending';
+    const t = playing ? api.time() : pn / 1000, fever = J && J.feverOn && playing;
+    if (!playing) { L = lanesFor(api); layout(api); if (api._pal) PAL = api._pal; if (press.length !== L) press = new Array(L).fill(0); }
+    const ph = (((t - beat0) / per) % 1 + 1) % 1, pulse = Math.pow(1 - ph, 3);
+    stage(c, W, H, t, pulse, fever);
+
+    // ---- 道 ----
+    const far = proj(0, 1e3), eL = k => proj(k - 0.5, 0), top = k => ({ x: G.cx + (k - 0.5 - (L - 1) / 2) * G.laneW * depth(9), y: G.vy + (G.lineY - G.vy) * depth(9) });
+    const bot = k => { const s = 1.42; return { x: G.cx + (k - 0.5 - (L - 1) / 2) * G.laneW * s, y: G.vy + (G.lineY - G.vy) * s }; };
+    c.fillStyle = 'rgba(6,7,22,.72)';
+    c.beginPath(); c.moveTo(top(0).x, top(0).y); c.lineTo(top(L).x, top(L).y); c.lineTo(bot(L).x, bot(L).y); c.lineTo(bot(0).x, bot(0).y); c.closePath(); c.fill();
+    for (let k = 0; k < L; k++) {                           // 押したレーンが光る
+      const lit = Math.max(0, 1 - (pn - (press[k] || 0)) / 200); if (lit <= 0) continue;
+      const lg = c.createLinearGradient(0, top(0).y, 0, G.lineY);
+      lg.addColorStop(0, 'rgba(255,255,255,0)'); lg.addColorStop(1, `hsla(${PAL.h1},100%,75%,${0.32 * lit})`);
+      c.fillStyle = lg; c.beginPath(); c.moveTo(top(k).x, top(k).y); c.lineTo(top(k + 1).x, top(k + 1).y); c.lineTo(eL(k + 1).x, G.lineY); c.lineTo(eL(k).x, G.lineY); c.fill();
+    }
+    c.lineWidth = 1; c.strokeStyle = 'rgba(255,255,255,.1)'; c.beginPath();
+    for (let k = 0; k <= L; k++) { c.moveTo(top(k).x, top(k).y); c.lineTo(bot(k).x, bot(k).y); }
+    c.stroke();
+    c.lineWidth = 2; c.strokeStyle = `hsla(${PAL.h1},100%,75%,.5)`; c.beginPath();
+    for (const k of [0, L]) { c.moveTo(top(k).x, top(k).y); c.lineTo(bot(k).x, bot(k).y); }
+    c.stroke();
+    if (playing) for (let k = 0; k < Math.ceil(APP / per) + 1; k++) {            // 拍ごとの横線がノーツと同じ速さで流れる
+      const z = (k - ph) * per / APP; if (z > 1.2) break;
+      const a = proj(-0.5, z), b = proj(L - 0.5, z);
+      c.strokeStyle = `rgba(255,255,255,${0.1 * clamp(1.2 - z, 0, 1)})`; c.lineWidth = 1; c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke();
+    }
+    // 叩くライン
+    const xa = eL(0).x, xb = eL(L).x, lg = c.createLinearGradient(xa, 0, xb, 0);
+    lg.addColorStop(0, `hsl(${PAL.h1} 100% 72%)`); lg.addColorStop(0.5, '#fff'); lg.addColorStop(1, `hsl(${PAL.h3} 100% 74%)`);
+    c.strokeStyle = lg; c.lineWidth = 3.5 + pulse * 2.5; c.shadowColor = '#fff'; c.shadowBlur = 10 + pulse * 16;
+    c.beginPath(); c.moveTo(xa, G.lineY); c.lineTo(xb, G.lineY); c.stroke(); c.shadowBlur = 0;
+    for (let k = 0; k < L; k++) {                           // レーンごとの受け皿
+      const q = proj(k, 0), lit = Math.max(0, 1 - (pn - (press[k] || 0)) / 200), w = G.laneW * 0.8;
+      c.strokeStyle = `rgba(255,255,255,${0.28 + lit * 0.7})`; c.lineWidth = 2; rrect(c, q.x - w / 2, q.y - G.laneW * 0.13, w, G.laneW * 0.26, G.laneW); c.stroke();
+      if (!api.pointer.touch && KEYCAP[L] && G.laneW > 44) { c.fillStyle = `rgba(255,255,255,${0.3 + lit * 0.6})`; c.font = `700 ${Math.round(G.laneW * 0.2)}px ${RG.FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(KEYCAP[L][k], q.x, q.y + G.laneW * 0.46); }
+    }
+    if (!playing || !J) { fx.step(dt); return; }
+
+    // ---- 進行 ----
+    if (api.state === 'play') {
+      J.update();
+      for (let i = head; i < notes.length; i++) {
+        const n = notes[i], tau = t - n.t;
+        if (tau < -APP) break;
+        if (n.done) continue;
+        if (api.auto && tau >= 0) { n.done = true; press[n.lane] = pn; judge(api, n, 'perfect'); if (n.kind === 'hold') { n.active = true; live.push(n); } continue; }
+        if (tau > WIN.good && !n.pending) { n.done = true; judge(api, n, 'miss'); if (n.kind === 'hold') { counts.miss++; J.miss(); } }
+      }
+      while (head < notes.length && notes[head].done) head++;
+      for (const tc of touches.values()) if (tc.flick && t - tc.flick.n.t > 0.22) endFlick(api, tc, false);
+      for (let i = live.length - 1; i >= 0; i--) {          // 長押し・スライド
+        const n = live[i], lp = laneOf(n, t);
+        if (api.auto) press[clamp(Math.round(lp), 0, L - 1)] = pn;
+        let on = api.auto;
+        if (!on) for (const tc of touches.values()) { if (tc.kb ? (n.path ? true : tc.lane === n.lane) : Math.abs(lanePosAt(tc.x) - lp) <= 1.15) { on = true; break; } }
+        if (on) { n.lost = null; if (Math.random() < dt * 40) { const q = proj(lp, 0); fx.burst(q.x, q.y, 1, { colors: [`hsl(${PAL.h2} 100% 78%)`, '#fff'], v0: 60, v1: 260, g: -200 * S, s: 2 }); } }
+        else if (n.lost === null) n.lost = t;
+        if (t >= n.end) { live.splice(i, 1); n.active = false; n.fin = true; judge(api, n, 'perfect', { lane: lp, tail: true }); }
+        else if (!on && t - n.lost > 0.2 && t < n.end - 0.12) { live.splice(i, 1); n.active = false; n.broken = t; judge(api, n, 'miss'); }
+      }
+    }
+    fx.step(dt);
+    c.save(); c.translate((Math.random() - 0.5) * fx.shake, (Math.random() - 0.5) * fx.shake);
+
+    // ---- 長押しの帯 ----
+    const band = n => {
+      const a = Math.max(n.t, n.active ? t : n.t), b = Math.min(n.end, t + APP);
+      if (b <= a) return;
+      const ts = [a]; if (n.path) for (const p of n.path) if (p.t > a && p.t < b) ts.push(p.t); ts.push(b);
+      const pts = [];
+      for (let k = 0; k + 1 < ts.length; k++) for (let j = 0; j < 6; j++) pts.push(ts[k] + (ts[k + 1] - ts[k]) * j / 6);
+      pts.push(b);
+      const hue = PAL.h2, lit = n.active && n.lost === null;
+      c.beginPath();
+      pts.forEach((tt, k) => { const q = proj(laneOf(n, tt), (tt - t) / APP), hw = G.laneW * q.s * 0.3; k ? c.lineTo(q.x - hw, q.y) : c.moveTo(q.x - hw, q.y); });
+      for (let k = pts.length - 1; k >= 0; k--) { const q = proj(laneOf(n, pts[k]), (pts[k] - t) / APP), hw = G.laneW * q.s * 0.3; c.lineTo(q.x + hw, q.y); }
+      c.closePath();
+      c.fillStyle = n.broken ? 'rgba(140,145,170,.25)' : `hsla(${hue},100%,${lit ? 72 : 62}%,${lit ? 0.62 : 0.38})`;
+      if (lit) { c.shadowColor = `hsl(${hue} 100% 65%)`; c.shadowBlur = 16; }
+      c.fill(); c.shadowBlur = 0;
+      c.strokeStyle = n.broken ? 'rgba(160,165,190,.4)' : `hsla(${hue},100%,86%,.9)`; c.lineWidth = 1.5; c.stroke();
+      if (n.path) for (const p of n.path) if (p.t > a + 0.01 && p.t < b) {                 // スライドの節
+        const q = proj(p.lane, (p.t - t) / APP), r = G.laneW * q.s * 0.12;
+        c.fillStyle = '#fff'; c.beginPath(); c.moveTo(q.x, q.y - r); c.lineTo(q.x + r * 1.5, q.y); c.lineTo(q.x, q.y + r); c.lineTo(q.x - r * 1.5, q.y); c.fill();
+      }
+      if (b >= n.end - 1e-6) drawNote(c, proj(laneOf(n, n.end), (n.end - t) / APP), 'hold', hue, false, 0.7);
+      if (n.active) { const q = proj(laneOf(n, t), 0); drawNote(c, q, 'hold', hue, false, lit ? 1.6 : 0.6); }
+    };
+    for (const n of live) band(n);
+    // ---- ノーツ (奥のものから) ----
+    let last = head; while (last < notes.length && notes[last].t - t <= APP) last++;
+    for (let i = last - 1; i >= head; i--) {
+      const n = notes[i]; if (n.done) continue;
+      const z = (n.t - t) / APP, q = proj(n.lane, z), al = clamp((1.04 - z) * 6, 0, 1);
+      c.globalAlpha = al;
+      if (n.kind === 'hold') band(n);
+      if (n.pair && n.pair.lane > n.lane && !n.pair.done) {                               // 同時押しをつなぐ線
+        const q2 = proj(n.pair.lane, z);
+        c.strokeStyle = 'rgba(255,255,255,.85)'; c.lineWidth = Math.max(1.5, 4 * q.s); c.beginPath(); c.moveTo(q.x, q.y); c.lineTo(q2.x, q2.y); c.stroke();
+      }
+      drawNote(c, q, n.kind, n.kind === 'flick' ? PAL.h3 : n.kind === 'hold' ? PAL.h2 : n.big ? 45 : PAL.h1, n.big);
+      c.globalAlpha = 1;
+    }
+    // ---- 命中の光 ----
+    c.save(); c.globalCompositeOperation = 'lighter';
+    for (let i = rings.length - 1; i >= 0; i--) {
+      const r = rings[i], p = (pn - r.t0) / 360;
+      if (p >= 1) { rings.splice(i, 1); continue; }
+      const q = proj(r.lane, 0), e = 1 - (1 - p) * (1 - p), w = G.laneW;
+      const pg = c.createLinearGradient(0, q.y - w * (r.flick ? 5 : 2.6), 0, q.y);
+      pg.addColorStop(0, 'rgba(0,0,0,0)'); pg.addColorStop(1, `hsla(${r.hue},100%,72%,${(1 - p) * (r.big ? 0.75 : 0.45)})`);
+      c.fillStyle = pg; c.fillRect(q.x - w * 0.42, q.y - w * (r.flick ? 5 : 2.6), w * 0.84, w * (r.flick ? 5 : 2.6));
+      c.globalAlpha = 1 - p; c.strokeStyle = `hsl(${r.hue} 100% 80%)`; c.lineWidth = 4 * (1 - p) + 0.5;
+      c.beginPath(); c.ellipse(q.x, q.y, w * (0.42 + e * 0.5), w * (0.15 + e * 0.22), 0, 0, TAU); c.stroke();
+      c.globalAlpha = 1;
+    }
+    c.restore();
+    c.restore();
+    fx.draw(c);
+    // ---- 判定の表示 ----
+    if (verdict) {
+      const p = (pn - verdict.t0) / 480;
+      if (p >= 1) verdict = null;
+      else {
+        const K = JUDGE[verdict.kind], sc = 1 + (1 - Math.min(1, p * 8)) * 0.45, fs = Math.round(clamp(G.laneW * 0.46, 22, 40) * sc), y = G.lineY - Math.min(G.laneW * 1.5, H * 0.2);
+        c.save(); c.globalAlpha = p < 0.7 ? 1 : (1 - p) / 0.3; c.textAlign = 'center'; c.textBaseline = 'middle';
+        c.font = `800 italic ${fs}px ${RG.FONT}`;
+        const tg = c.createLinearGradient(0, y - fs / 2, 0, y + fs / 2); tg.addColorStop(0, K.c1); tg.addColorStop(1, K.c2);
+        c.lineWidth = fs * 0.16; c.strokeStyle = 'rgba(8,8,26,.85)'; c.lineJoin = 'round'; c.strokeText(K.label, G.cx, y);
+        c.shadowColor = K.c2; c.shadowBlur = 18; c.fillStyle = tg; c.fillText(K.label, G.cx, y);
+        c.restore();
+      }
+    }
+    fx.drawFlash(c, W, H);
+    J.draw(c);
+  },
+});
+window.addEventListener('pointercancel', e => touches.delete(e.pointerId));
+window.addEventListener('blur', () => touches.clear());
+</script>
+</body>
+</html>
